@@ -61,7 +61,11 @@ final class OutputHub: @unchecked Sendable {
 @MainActor
 final class Studio: ObservableObject {
     @Published var project: Project {
-        didSet { projectChanged(from: oldValue) }
+        didSet {
+            // Ignore our own clean-up write below, or it would loop forever.
+            guard !isNormalizing else { return }
+            projectChanged(from: oldValue)
+        }
     }
     @Published var selectedItemID: UUID?
     @Published var editingSourceID: UUID?
@@ -96,6 +100,7 @@ final class Studio: ObservableObject {
     private var recording: RecordingOutput?
     private var stream: StreamOutput?
     private var previewClients = 0
+    private var isNormalizing = false
     private(set) var isActive = false
     private var activity: NSObjectProtocol?
     private var saveWork: DispatchWorkItem?
@@ -218,14 +223,19 @@ final class Studio: ObservableObject {
     // MARK: - Project changes
 
     private func projectChanged(from old: Project) {
-        // Keep typed-in values sane (encoders need even sizes).
-        let v = project.video
-        let fixedW = max(16, min(7680, v.width)) & ~1, fixedH = max(16, min(4320, v.height)) & ~1
-        if fixedW != v.width || fixedH != v.height { project.video.width = fixedW; project.video.height = fixedH }
-        project.record.bitrateKbps = max(500, min(500_000, project.record.bitrateKbps))
-        project.stream.bitrateKbps = max(300, min(100_000, project.stream.bitrateKbps))
-        project.record.audioKbps = max(64, min(320, project.record.audioKbps))
-        project.stream.audioKbps = max(64, min(320, project.stream.audioKbps))
+        // Keep typed-in values sane (encoders need even sizes) — written back once, only if needed.
+        var fixed = project
+        fixed.video.width = max(16, min(7680, fixed.video.width)) & ~1
+        fixed.video.height = max(16, min(4320, fixed.video.height)) & ~1
+        fixed.record.bitrateKbps = max(500, min(500_000, fixed.record.bitrateKbps))
+        fixed.stream.bitrateKbps = max(300, min(100_000, fixed.stream.bitrateKbps))
+        fixed.record.audioKbps = max(64, min(320, fixed.record.audioKbps))
+        fixed.stream.audioKbps = max(64, min(320, fixed.stream.audioKbps))
+        if fixed != project {
+            isNormalizing = true
+            project = fixed
+            isNormalizing = false
+        }
         scheduleSave()
         if old.audioSources != project.audioSources { audio.sync(project.audioSources) }
         if old.listenTrack != project.listenTrack { audio.setListenTrack(project.listenTrack) }

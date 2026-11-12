@@ -10,17 +10,44 @@ final class PCMConverter {
     private var converter: AVAudioConverter?
     private var inputFormat: AVAudioFormat?
 
+    private var sourceDescription: AudioStreamBasicDescription?
+    private var sourceFormat: AVAudioFormat?
+
     func convert(_ sampleBuffer: CMSampleBuffer) -> AVAudioPCMBuffer? {
-        guard let description = sampleBuffer.formatDescription else { return nil }
-        let format = AVAudioFormat(cmAudioFormatDescription: description)
-        let frames = AVAudioFrameCount(CMSampleBufferGetNumSamples(sampleBuffer))
-        guard frames > 0, let input = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames) else { return nil }
+        // Build the format from the raw stream description with failable initializers:
+        // devices can switch formats mid-stream, and an unusable one must be skipped, not crash.
+        guard let description = sampleBuffer.formatDescription,
+              var asbd = CMAudioFormatDescriptionGetStreamBasicDescription(description)?.pointee,
+              asbd.mFormatID == kAudioFormatLinearPCM,
+              asbd.mSampleRate >= 8_000, asbd.mSampleRate <= 384_000,
+              asbd.mChannelsPerFrame >= 1, asbd.mChannelsPerFrame <= 64 else { return nil }
+        let frameCount = CMSampleBufferGetNumSamples(sampleBuffer)
+        guard frameCount > 0, frameCount <= 192_000 else { return nil }
+        if sourceDescription.map({ !Self.same($0, asbd) }) ?? true {
+            sourceDescription = asbd
+            sourceFormat = AVAudioFormat(streamDescription: &asbd)
+            if sourceFormat == nil, let layout = AVAudioChannelLayout(
+                layoutTag: kAudioChannelLayoutTag_DiscreteInOrder | asbd.mChannelsPerFrame
+            ) {
+                sourceFormat = AVAudioFormat(streamDescription: &asbd, channelLayout: layout)
+            }
+        }
+        let frames = AVAudioFrameCount(frameCount)
+        guard let format = sourceFormat,
+              let input = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames) else { return nil }
         input.frameLength = frames
         let status = CMSampleBufferCopyPCMDataIntoAudioBufferList(
             sampleBuffer, at: 0, frameCount: Int32(frames), into: input.mutableAudioBufferList
         )
         guard status == noErr else { return nil }
         return convert(input)
+    }
+
+    private static func same(_ a: AudioStreamBasicDescription, _ b: AudioStreamBasicDescription) -> Bool {
+        a.mSampleRate == b.mSampleRate && a.mFormatID == b.mFormatID && a.mFormatFlags == b.mFormatFlags
+            && a.mBytesPerPacket == b.mBytesPerPacket && a.mFramesPerPacket == b.mFramesPerPacket
+            && a.mBytesPerFrame == b.mBytesPerFrame && a.mChannelsPerFrame == b.mChannelsPerFrame
+            && a.mBitsPerChannel == b.mBitsPerChannel
     }
 
     func convert(_ input: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
@@ -97,6 +124,17 @@ final class InputDeviceCapture: NSObject, AudioCapture, AVCaptureAudioDataOutput
             session.beginConfiguration()
             if session.canAddInput(input) { session.addInput(input) }
             let output = AVCaptureAudioDataOutput()
+            // Ask for one fixed format (48 kHz stereo float), so a device changing its own
+            // format mid-stream doesn't reach us, and no extra conversion is needed.
+            output.audioSettings = [
+                AVFormatIDKey: kAudioFormatLinearPCM,
+                AVSampleRateKey: 48_000,
+                AVNumberOfChannelsKey: 2,
+                AVLinearPCMBitDepthKey: 32,
+                AVLinearPCMIsFloatKey: true,
+                AVLinearPCMIsNonInterleaved: true,
+                AVLinearPCMIsBigEndianKey: false
+            ]
             output.setSampleBufferDelegate(self, queue: queue)
             if session.canAddOutput(output) { session.addOutput(output) }
             session.commitConfiguration()

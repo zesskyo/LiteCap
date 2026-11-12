@@ -180,7 +180,7 @@ final class AACEncoder {
     func encode(_ buffer: AVAudioPCMBuffer, pts: Int64) {
         // Timestamps come from counting samples; re-anchor only after a real gap.
         let expected = anchor.map { $0 + framesIn * 1_000_000 / 48_000 }
-        if expected == nil || abs(pts - expected!) > 40_000 {
+        if expected == nil || abs(pts - expected!) > 250_000 {
             if anchor != nil {
                 converter.reset()
                 pending.removeAll()

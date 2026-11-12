@@ -42,8 +42,19 @@ final class OutputHub: @unchecked Sendable {
     private var recording: Recorder?
     private var stream: StreamOutput?
 
-    func set(recording: Recorder?) { lock.withLock { self.recording = recording } }
-    func set(stream: StreamOutput?) { lock.withLock { self.stream = stream } }
+    func set(recording: Recorder?) {
+        lock.withLock {
+            if self.recording == nil, recording != nil { clocks.removeAll() }
+            self.recording = recording
+        }
+    }
+
+    func set(stream: StreamOutput?) {
+        lock.withLock {
+            if self.stream == nil, stream != nil { clocks.removeAll() }
+            self.stream = stream
+        }
+    }
     var isEmpty: Bool { lock.withLock { recording == nil && stream == nil } }
 
     func video(_ buffer: CVPixelBuffer, _ pts: CMTime) {
@@ -52,13 +63,31 @@ final class OutputHub: @unchecked Sendable {
         s?.appendVideo(buffer, pts: pts)
     }
 
+    /// Per track: host time of the first sample and how many samples have followed.
+    private var clocks: [Int: (anchor: Int64, frames: Int64)] = [:]
+
     func audio(_ track: Int, _ buffer: AVAudioPCMBuffer, _ when: AVAudioTime) {
         let (r, s) = lock.withLock { (recording, stream) }
-        // Audio is ~20 ms behind real time after the capture FIFO; line it up with video.
-        let pts = hostMicros(when) - 20_000
+        guard r != nil || s != nil else { return }
+        // Audio is ~40 ms behind real time after the capture FIFO; line it up with video.
+        let arrival = hostMicros(when) - 40_000
+        // Timestamps come from counting samples, so jitter in when buffers arrive can't
+        // cause gaps/overlaps (heard as crackle). Re-sync only after a real interruption.
+        let pts: Int64 = lock.withLock {
+            var clock = clocks[track] ?? (arrival, 0)
+            let expected = clock.anchor + clock.frames * 1_000_000 / 48_000
+            if abs(arrival - expected) > 250_000 { clock = (arrival, 0) }
+            let value = clock.anchor + clock.frames * 1_000_000 / 48_000
+            clock.frames += Int64(buffer.frameLength)
+            clocks[track] = clock
+            return value
+        }
         r?.appendAudio(track: track, buffer, pts: pts)
         s?.appendAudio(track: track, buffer, pts: pts)
     }
+
+    /// Start counting afresh when an output starts.
+    func resetAudioClocks() { lock.withLock { clocks.removeAll() } }
 }
 
 @MainActor

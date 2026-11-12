@@ -16,7 +16,8 @@ public final class AudioRing: @unchecked Sendable {
     private let targetLatency: Int
     private let maxLatency: Int
 
-    public init(capacityFrames: Int = 48_000, targetLatencyFrames: Int = 960, maxLatencyFrames: Int = 4_800) {
+    /// 40 ms cushion, trimmed back if it grows past 200 ms (clock drift).
+    public init(capacityFrames: Int = 48_000, targetLatencyFrames: Int = 1_920, maxLatencyFrames: Int = 9_600) {
         capacity = capacityFrames
         left = Array(repeating: 0, count: capacityFrames)
         right = Array(repeating: 0, count: capacityFrames)

@@ -5,29 +5,21 @@ struct MixerPanel: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            PanelHeader(title: "Audio Mixer") {
-                Picker("Listen", selection: $studio.project.listenTrack) {
-                    Text("Listen: Off").tag(0)
-                    ForEach(1...Project.trackCount, id: \.self) { t in
-                        Text("Listen: \(studio.project.trackNames[t - 1])").tag(t)
-                    }
-                }
-                .labelsHidden()
-                .fixedSize()
-                .help("Hear a track's full mix on your headphones (use headphones to avoid echo)")
+            PanelHeader(title: "Mixer") {
+                Button { studio.showingTracks = true } label: { Image(systemName: "slider.horizontal.3") }
+                    .buttonStyle(IconButtonStyle()).help("Tracks")
                 AddAudioMenu()
             }
-            ScrollView {
-                VStack(spacing: 6) {
-                    ForEach(studio.project.audioSources) { source in
-                        ChannelStrip(sourceID: source.id)
+            if studio.project.audioSources.isEmpty {
+                Text("No audio sources").foregroundStyle(.secondary).frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ScrollView(.horizontal) {
+                    HStack(alignment: .top, spacing: 1) {
+                        ForEach(studio.project.audioSources) { source in ChannelStrip(sourceID: source.id) }
                     }
-                    if studio.project.audioSources.isEmpty {
-                        Text("No audio sources. Click + to add one.").foregroundStyle(.secondary).padding()
-                    }
+                    .padding(.horizontal, 6)
+                    .padding(.bottom, 6)
                 }
-                .padding(.horizontal, 10)
-                .padding(.bottom, 8)
             }
         }
     }
@@ -44,7 +36,7 @@ private struct AddAudioMenu: View {
                     Button(app.title) { studio.addAudioSource(.app(bundleID: app.id, name: app.title), name: app.title) }
                 }
             }
-            Menu("Microphone / Input") {
+            Menu("Input") {
                 Button("Default Input") { studio.addAudioSource(.input(deviceID: ""), name: "Mic") }
                 ForEach(studio.audioInputs) { input in
                     Button(input.title) { studio.addAudioSource(.input(deviceID: input.id), name: input.title) }
@@ -55,11 +47,12 @@ private struct AddAudioMenu: View {
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
-        .fixedSize()
+        .frame(width: 22)
         .onAppear { Task { await studio.refreshPickers() } }
     }
 }
 
+/// One vertical channel: dB, meters + fader, buttons, name.
 private struct ChannelStrip: View {
     @EnvironmentObject var studio: Studio
     let sourceID: UUID
@@ -68,60 +61,43 @@ private struct ChannelStrip: View {
 
     var body: some View {
         if let source = studio.project.audioSources.first(where: { $0.id == sourceID }) {
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 6) {
-                    Image(systemName: source.kind.symbol).foregroundStyle(.secondary)
-                    Text(source.name).font(.callout).lineLimit(1)
-                    if !source.filters.isEmpty {
-                        Text("\(source.filters.count) filter\(source.filters.count == 1 ? "" : "s")")
-                            .font(.caption2).padding(.horizontal, 4).background(.quaternary, in: Capsule())
-                    }
-                    Spacer()
-                    Text(Self.dB(source.volume)).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-                }
-                Meter(sourceID: sourceID, meters: studio.meters, muted: source.muted)
-                HStack(spacing: 6) {
-                    Slider(value: Binding(
+            VStack(spacing: 5) {
+                Text(Self.dB(source.volume)).font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+                HStack(spacing: 4) {
+                    Meter(sourceID: sourceID, meters: studio.meters, muted: source.muted)
+                    VerticalFader(value: Binding(
                         get: { Self.sliderValue(source.volume) },
                         set: { v in studio.updateAudioSource(sourceID) { $0.volume = Self.gain(v) } }
-                    ), in: 0...1)
-                    .controlSize(.small)
+                    ), resetValue: Self.sliderValue(1))
+                }
+                .frame(maxHeight: .infinity)
+                HStack(spacing: 2) {
                     Button { studio.updateAudioSource(sourceID) { $0.muted.toggle() } } label: {
                         Image(systemName: source.muted ? "speaker.slash.fill" : "speaker.wave.2")
-                            .foregroundStyle(source.muted ? Color.red : Color.primary)
                     }
-                    .buttonStyle(.borderless).help(source.muted ? "Unmute" : "Mute")
+                    .buttonStyle(IconButtonStyle(on: source.muted)).help("Mute")
                     Button { studio.updateAudioSource(sourceID) { $0.monitor.toggle() } } label: {
-                        Image(systemName: source.monitor ? "headphones.circle.fill" : "headphones")
-                            .foregroundStyle(source.monitor ? Color.accentColor : Color.primary)
+                        Image(systemName: "headphones")
                     }
-                    .buttonStyle(.borderless).help("Monitor: hear this source on your output device")
-                    Button { studio.filtersSourceID = sourceID } label: { Image(systemName: "slider.vertical.3") }
-                        .buttonStyle(.borderless).help("Filters (Audio Unit plugins)")
+                    .buttonStyle(IconButtonStyle(on: source.monitor)).help("Monitor")
                     Menu {
-                        Section("Tracks") {
-                            ForEach(1...Project.trackCount, id: \.self) { t in
-                                Toggle(studio.project.trackNames[t - 1], isOn: Binding(
-                                    get: { source.tracks.contains(t) },
-                                    set: { on in studio.updateAudioSource(sourceID) {
-                                        if on { $0.tracks.insert(t) } else { $0.tracks.remove(t) }
-                                    } }
-                                ))
-                            }
-                        }
                         Button("Filters…") { studio.filtersSourceID = sourceID }
+                        Button("Tracks…") { studio.showingTracks = true }
                         Button("Rename…") { newName = source.name; renaming = true }
                         Divider()
                         Button("Remove", role: .destructive) { studio.removeAudioSource(sourceID) }
                     } label: {
                         Image(systemName: "gearshape")
                     }
-                    .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+                    .menuStyle(.borderlessButton).menuIndicator(.hidden).frame(width: 22)
                 }
-                TrackDots(tracks: source.tracks)
+                Text(source.name).font(.caption).lineLimit(1).truncationMode(.middle)
+                    .foregroundStyle(source.filters.isEmpty ? Color.primary : Theme.active)
+                    .help(source.filters.isEmpty ? source.name : "\(source.name) — \(source.filters.count) filter(s)")
             }
-            .padding(8)
-            .background(.background.secondary, in: RoundedRectangle(cornerRadius: 8))
+            .frame(width: 84)
+            .padding(.vertical, 6)
+            .background(Theme.panel)
             .alert("Rename Audio Source", isPresented: $renaming) {
                 TextField("Name", text: $newName)
                 Button("Rename") { if !newName.isEmpty { studio.updateAudioSource(sourceID) { $0.name = newName } } }
@@ -130,34 +106,41 @@ private struct ChannelStrip: View {
         }
     }
 
-    // Slider position ↔ gain: cubic taper feels natural (like OBS); 0.79 ≈ 0 dB, 1.0 ≈ +6 dB.
+    // Fader position ↔ gain: cubic taper (like OBS); 0.79 ≈ 0 dB, 1.0 ≈ +6 dB.
     static func gain(_ slider: Double) -> Double { 2 * pow(slider, 3) }
     static func sliderValue(_ gain: Double) -> Double { pow(gain / 2, 1.0 / 3) }
 
     static func dB(_ gain: Double) -> String {
-        guard gain > 0.00001 else { return "-∞ dB" }
+        guard gain > 0.00001 else { return "-inf dB" }
         return String(format: "%.1f dB", 20 * log10(gain))
     }
 }
 
-private struct TrackDots: View {
-    let tracks: Set<Int>
+/// Square vertical fader. Drag to set; double-click for 0 dB.
+private struct VerticalFader: View {
+    @Binding var value: Double
+    let resetValue: Double
+
     var body: some View {
-        HStack(spacing: 3) {
-            ForEach(1...Project.trackCount, id: \.self) { t in
-                Text("\(t)")
-                    .font(.system(size: 9, weight: .semibold).monospacedDigit())
-                    .frame(width: 14, height: 12)
-                    .background(tracks.contains(t) ? Color.accentColor.opacity(0.8) : Color.secondary.opacity(0.15),
-                                in: RoundedRectangle(cornerRadius: 3))
-                    .foregroundStyle(tracks.contains(t) ? Color.white : Color.secondary)
+        GeometryReader { geo in
+            let h = geo.size.height, thumb: CGFloat = 8
+            let y = (1 - CGFloat(value)) * (h - thumb)
+            ZStack(alignment: .top) {
+                Rectangle().fill(Color.gray.opacity(0.35)).frame(width: 3)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                Rectangle().fill(Color.primary.opacity(0.85)).frame(width: 18, height: thumb).offset(y: y)
             }
+            .contentShape(Rectangle())
+            .gesture(DragGesture(minimumDistance: 0).onChanged { g in
+                value = Double(min(1, max(0, 1 - (g.location.y - thumb / 2) / max(1, h - thumb))))
+            })
+            .simultaneousGesture(TapGesture(count: 2).onEnded { value = resetValue })
         }
-        .help("Tracks this source goes to (change in the ⚙︎ menu)")
+        .frame(width: 22)
     }
 }
 
-/// Stereo peak meter, −60…0 dBFS. Observes only the meter store.
+/// Stereo peak meter, −60…0 dBFS, bottom-up. Observes only the meter store.
 private struct Meter: View {
     let sourceID: UUID
     @ObservedObject var meters: MeterStore
@@ -165,11 +148,11 @@ private struct Meter: View {
 
     var body: some View {
         let levels = meters.levels[sourceID] ?? AudioEngine.Levels()
-        VStack(spacing: 2) {
+        HStack(spacing: 2) {
             bar(levels.left)
             bar(levels.right)
         }
-        .frame(height: 9)
+        .frame(width: 14)
         .opacity(muted ? 0.35 : 1)
     }
 
@@ -177,17 +160,61 @@ private struct Meter: View {
         GeometryReader { geo in
             let db = peak > 0 ? 20 * log10(Double(peak)) : -60
             let fraction = max(0, min(1, (db + 60) / 60))
-            ZStack(alignment: .leading) {
-                Rectangle().fill(Color.secondary.opacity(0.18))
+            ZStack(alignment: .bottom) {
+                Rectangle().fill(Color.gray.opacity(0.2))
                 Rectangle()
                     .fill(LinearGradient(stops: [
                         .init(color: .green, location: 0),
                         .init(color: .green, location: 0.70),
                         .init(color: .yellow, location: 0.85),
                         .init(color: .red, location: 1)
-                    ], startPoint: .leading, endPoint: .trailing))
-                    .mask(alignment: .leading) { Rectangle().frame(width: geo.size.width * fraction) }
+                    ], startPoint: .bottom, endPoint: .top))
+                    .mask(alignment: .bottom) { Rectangle().frame(height: geo.size.height * fraction) }
             }
         }
+    }
+}
+
+/// Which of the 6 tracks each source goes to (like OBS's Advanced Audio Properties).
+struct TracksSheet: View {
+    @EnvironmentObject var studio: Studio
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 8) {
+                GridRow {
+                    Text("Source").font(.headline)
+                    Text("Monitor").font(.headline)
+                    ForEach(1...Project.trackCount, id: \.self) { t in Text("\(t)").font(.headline).gridColumnAlignment(.center) }
+                }
+                Divider().gridCellUnsizedAxes(.horizontal)
+                ForEach(studio.project.audioSources) { source in
+                    GridRow {
+                        Text(source.name).lineLimit(1).frame(minWidth: 160, alignment: .leading)
+                        Toggle("", isOn: Binding(
+                            get: { source.monitor },
+                            set: { on in studio.updateAudioSource(source.id) { $0.monitor = on } }
+                        )).labelsHidden().toggleStyle(.checkbox)
+                        ForEach(1...Project.trackCount, id: \.self) { t in
+                            Toggle("", isOn: Binding(
+                                get: { source.tracks.contains(t) },
+                                set: { on in studio.updateAudioSource(source.id) {
+                                    if on { $0.tracks.insert(t) } else { $0.tracks.remove(t) }
+                                } }
+                            )).labelsHidden().toggleStyle(.checkbox)
+                        }
+                    }
+                }
+            }
+            .padding(16)
+            Divider()
+            HStack {
+                Spacer()
+                Button("Done") { dismiss() }.buttonStyle(FlatButtonStyle()).keyboardShortcut(.defaultAction)
+            }
+            .padding(12)
+        }
+        .frame(minWidth: 520)
     }
 }

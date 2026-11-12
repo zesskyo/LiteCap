@@ -146,6 +146,10 @@ struct RecordSettings: Codable, Equatable {
     var bitrateKbps = 20_000
     var tracks: Set<Int> = [1]
     var audioKbps = 192
+    /// Copy each finished .mkv to an .mp4 next to it (needs ffmpeg). Optional so older saved projects still load.
+    var autoRemux: Bool?
+    /// File format (nil = MKV). Optional for the same reason.
+    var format: RecordFormat?
 }
 
 struct StreamSettings: Codable, Equatable {

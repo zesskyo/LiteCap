@@ -19,10 +19,7 @@ final class RecordingOutput: @unchecked Sendable {
     var onError: ((String) -> Void)?
 
     init(folder: URL, settings: RecordSettings, canvas: VideoSettings, trackNames: [String]) throws {
-        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd HH-mm-ss"
-        url = folder.appendingPathComponent("\(formatter.string(from: Date())).mkv")
+        url = try Recorders.fileURL(folder: folder, extension: "mkv")
         fps = canvas.fps
         video = try VideoEncoder(.init(codec: settings.codec, width: canvas.width, height: canvas.height,
                                        fps: canvas.fps, bitrateKbps: settings.bitrateKbps, constantBitrate: false))

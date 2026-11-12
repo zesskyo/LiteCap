@@ -22,7 +22,8 @@ struct SourcePropertiesSheet: View {
                         TransformEditor(itemID: itemID)
                     }
                 }
-                .formStyle(.grouped)
+                .formStyle(.columns)
+                .padding(20)
             } else {
                 ProgressView().padding(40)
             }
@@ -41,6 +42,8 @@ struct SourcePropertiesSheet: View {
             .padding(12)
         }
         .frame(width: 520, height: 600)
+        .buttonStyle(FlatButtonStyle())
+        .textFieldStyle(.squareBorder)
         .onAppear {
             draft = studio.project.videoSource(sourceID)
             Task { await studio.refreshPickers() }
@@ -215,9 +218,10 @@ struct FiltersSheet: View {
                         .foregroundStyle(.secondary)
                 }
             }
+            .listStyle(.plain)
             Divider()
             HStack {
-                Text("Filters run top to bottom. Turn on 🎧 in the mixer, or pick a track under Listen, to hear the result.")
+                Text("Filters run top to bottom. Turn on 🎧 in the mixer to hear the result.")
                     .font(.caption).foregroundStyle(.secondary)
                 Spacer()
                 Button("Done") { dismiss() }.keyboardShortcut(.defaultAction)
@@ -225,6 +229,7 @@ struct FiltersSheet: View {
             .padding(12)
         }
         .frame(width: 560, height: 420)
+        .buttonStyle(FlatButtonStyle())
         .onAppear { plugins = AudioPlugins.available() }
     }
 }

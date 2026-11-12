@@ -8,22 +8,25 @@ struct MainView: View {
         VStack(spacing: 0) {
             PreviewPanel()
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(Color(nsColor: .underPageBackgroundColor))
+                .background(Color.black.opacity(0.85))
             Divider()
             HStack(alignment: .top, spacing: 0) {
-                ScenesPanel().frame(width: 180)
+                ScenesPanel().frame(width: 170)
                 Divider()
-                SourcesPanel().frame(width: 260)
+                SourcesPanel().frame(width: 250)
                 Divider()
-                MixerPanel().frame(minWidth: 320, maxWidth: .infinity)
+                MixerPanel().frame(minWidth: 300, maxWidth: .infinity)
                 Divider()
-                ControlsPanel().frame(width: 210)
+                ControlsPanel().frame(width: 190)
             }
-            .frame(height: 260)
+            .frame(height: 270)
             Divider()
             StatusBar()
         }
         .frame(minWidth: 1040, minHeight: 720)
+        .textFieldStyle(.squareBorder)
+        .onAppear { studio.windowAppeared() }
+        .onDisappear { studio.windowDisappeared() }
         .sheet(item: Binding(get: { studio.editingSourceID.map(IdentifiedID.init) },
                              set: { studio.editingSourceID = $0?.id })) { wrapped in
             SourcePropertiesSheet(sourceID: wrapped.id)
@@ -32,6 +35,7 @@ struct MainView: View {
                              set: { studio.filtersSourceID = $0?.id })) { wrapped in
             FiltersSheet(sourceID: wrapped.id)
         }
+        .sheet(isPresented: $studio.showingTracks) { TracksSheet() }
     }
 }
 
@@ -45,22 +49,32 @@ private struct PreviewPanel: View {
     @EnvironmentObject var studio: Studio
 
     var body: some View {
-        let W = CGFloat(studio.project.video.width), H = CGFloat(studio.project.video.height)
-        ZStack {
-            PreviewSurface(compositor: studio.compositor)
-            EditOverlay()
+        if studio.previewHidden {
+            VStack(spacing: 8) {
+                Text("Preview hidden").foregroundStyle(.secondary)
+                Button("Show Preview") { studio.previewHidden = false }.buttonStyle(FlatButtonStyle())
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            let W = CGFloat(studio.project.video.width), H = CGFloat(studio.project.video.height)
+            ZStack {
+                PreviewSurface(compositor: studio.compositor)
+                EditOverlay()
+            }
+            .aspectRatio(W / H, contentMode: .fit)
+            .padding(6)
+            .onAppear { studio.previewAppeared() }
+            .onDisappear { studio.previewDisappeared() }
         }
-        .aspectRatio(W / H, contentMode: .fit)
-        .padding(8)
-        .onAppear { studio.previewAppeared() }
-        .onDisappear { studio.previewDisappeared() }
     }
 }
 
-/// Click to select, drag to move, drag a corner to resize (hold ⇧ to ignore aspect ratio).
+/// Click to select, drag to move, drag a corner to resize (⇧ = free aspect).
+/// Edges and centers snap to the canvas and to other sources.
 private struct EditOverlay: View {
     @EnvironmentObject var studio: Studio
     @State private var mode: DragMode = .inactive
+    @State private var guides: [Guide] = []
 
     private enum DragMode {
         case inactive
@@ -69,11 +83,25 @@ private struct EditOverlay: View {
         case resize(UUID, CanvasRect, corner: Int)
     }
 
+    private struct Guide: Hashable {
+        let vertical: Bool
+        let position: Double
+    }
+
     var body: some View {
         GeometryReader { geo in
             let scale = geo.size.width / CGFloat(max(1, studio.project.video.width))
             ZStack(alignment: .topLeading) {
                 Color.clear.contentShape(Rectangle())
+                ForEach(guides, id: \.self) { guide in
+                    if guide.vertical {
+                        Rectangle().fill(Color.cyan).frame(width: 1, height: geo.size.height)
+                            .offset(x: CGFloat(guide.position) * scale)
+                    } else {
+                        Rectangle().fill(Color.cyan).frame(width: geo.size.width, height: 1)
+                            .offset(y: CGFloat(guide.position) * scale)
+                    }
+                }
                 if let item = studio.item(studio.selectedItemID), let f = item.frame, item.visible {
                     let rect = CGRect(x: f.x * scale, y: f.y * scale, width: f.w * scale, height: f.h * scale)
                     Rectangle()
@@ -91,7 +119,10 @@ private struct EditOverlay: View {
             .gesture(
                 DragGesture(minimumDistance: 0)
                     .onChanged { value in drag(value, scale: scale) }
-                    .onEnded { _ in mode = .inactive }
+                    .onEnded { _ in
+                        mode = .inactive
+                        guides = []
+                    }
             )
             .contextMenu { ItemMenu(itemID: studio.selectedItemID) }
         }
@@ -101,33 +132,88 @@ private struct EditOverlay: View {
         CGPoint(x: i % 2 == 0 ? r.minX : r.maxX, y: i < 2 ? r.minY : r.maxY)
     }
 
+    /// Snap lines: canvas edges and center, plus every other visible source's edges and center.
+    private func targets(excluding id: UUID) -> (x: [Double], y: [Double]) {
+        let W = Double(studio.project.video.width), H = Double(studio.project.video.height)
+        var xs = [0, W / 2, W], ys = [0, H / 2, H]
+        for item in studio.project.currentScene?.items ?? [] where item.id != id && item.visible {
+            guard let f = item.frame else { continue }
+            xs += [f.x, f.x + f.w / 2, f.x + f.w]
+            ys += [f.y, f.y + f.h / 2, f.y + f.h]
+        }
+        return (xs, ys)
+    }
+
+    /// Best correction moving any of `edges` onto any target, within `threshold`.
+    private static func snap(_ edges: [Double], to targets: [Double], threshold: Double) -> (delta: Double, line: Double)? {
+        var best: (delta: Double, line: Double)?
+        for edge in edges {
+            for target in targets {
+                let d = target - edge
+                if abs(d) <= threshold, abs(d) < abs(best?.delta ?? .infinity) { best = (d, target) }
+            }
+        }
+        return best
+    }
+
     private func drag(_ value: DragGesture.Value, scale: CGFloat) {
         if case .inactive = mode { begin(value, scale: scale) }
         let dx = Double(value.translation.width / scale), dy = Double(value.translation.height / scale)
-        let W = Double(studio.project.video.width), H = Double(studio.project.video.height)
-        let snap = 12.0
+        let threshold = 8 / Double(scale) // 8 screen points, whatever the preview size
+        let noSnap = NSEvent.modifierFlags.contains(.command) // hold ⌘ to place freely
         switch mode {
         case .move(let id, let start):
             var f = start
             f.x += dx
             f.y += dy
-            if abs(f.x) < snap { f.x = 0 }
-            if abs(f.y) < snap { f.y = 0 }
-            if abs(f.x + f.w - W) < snap { f.x = W - f.w }
-            if abs(f.y + f.h - H) < snap { f.y = H - f.h }
+            var newGuides: [Guide] = []
+            if !noSnap {
+                let t = targets(excluding: id)
+                if let s = Self.snap([f.x, f.x + f.w / 2, f.x + f.w], to: t.x, threshold: threshold) {
+                    f.x += s.delta
+                    newGuides.append(Guide(vertical: true, position: s.line))
+                }
+                if let s = Self.snap([f.y, f.y + f.h / 2, f.y + f.h], to: t.y, threshold: threshold) {
+                    f.y += s.delta
+                    newGuides.append(Guide(vertical: false, position: s.line))
+                }
+            }
+            guides = newGuides
             studio.updateItem(id) { $0.frame = f }
         case .resize(let id, let start, let corner):
             let free = NSEvent.modifierFlags.contains(.shift)
-            let anchorX = corner % 2 == 0 ? start.x + start.w : start.x
-            let anchorY = corner < 2 ? start.y + start.h : start.y
-            var w = max(16, corner % 2 == 0 ? start.w - dx : start.w + dx)
-            var h = max(16, corner < 2 ? start.h - dy : start.h + dy)
-            if !free {
-                let aspect = start.w / max(1, start.h)
-                if abs(dx) * start.h > abs(dy) * start.w { h = w / aspect } else { w = h * aspect }
+            let left = corner % 2 == 0, top = corner < 2
+            let anchorX = left ? start.x + start.w : start.x
+            let anchorY = top ? start.y + start.h : start.y
+            var w = max(16, left ? start.w - dx : start.w + dx)
+            var h = max(16, top ? start.h - dy : start.h + dy)
+            let aspect = start.w / max(1, start.h)
+            let widthLeads = abs(dx) * start.h >= abs(dy) * start.w
+            if !free { if widthLeads { h = w / aspect } else { w = h * aspect } }
+            var newGuides: [Guide] = []
+            if !noSnap {
+                let t = targets(excluding: id)
+                // Snap the moving edge along whichever axis leads, then keep the aspect ratio.
+                if free || widthLeads {
+                    let edge = left ? anchorX - w : anchorX + w
+                    if let s = Self.snap([edge], to: t.x, threshold: threshold) {
+                        w = max(16, w + (left ? -s.delta : s.delta))
+                        if !free { h = w / aspect }
+                        newGuides.append(Guide(vertical: true, position: s.line))
+                    }
+                }
+                if free || !widthLeads {
+                    let edge = top ? anchorY - h : anchorY + h
+                    if let s = Self.snap([edge], to: t.y, threshold: threshold) {
+                        h = max(16, h + (top ? -s.delta : s.delta))
+                        if !free { w = h * aspect }
+                        newGuides.append(Guide(vertical: false, position: s.line))
+                    }
+                }
             }
-            let x = corner % 2 == 0 ? anchorX - w : anchorX
-            let y = corner < 2 ? anchorY - h : anchorY
+            guides = newGuides
+            let x = left ? anchorX - w : anchorX
+            let y = top ? anchorY - h : anchorY
             studio.updateItem(id) { $0.frame = CanvasRect(x: x, y: y, w: w, h: h) }
         default:
             break
@@ -137,7 +223,6 @@ private struct EditOverlay: View {
     private func begin(_ value: DragGesture.Value, scale: CGFloat) {
         mode = .idle
         let p = value.startLocation
-        // Handles of the selected item first.
         if let item = studio.item(studio.selectedItemID), let f = item.frame, !item.locked, item.visible {
             let rect = CGRect(x: f.x * scale, y: f.y * scale, width: f.w * scale, height: f.h * scale)
             for corner in 0..<4 {
@@ -157,7 +242,7 @@ private struct EditOverlay: View {
     }
 }
 
-/// Shared right-click menu for a scene item.
+/// Right-click menu for a scene item.
 struct ItemMenu: View {
     @EnvironmentObject var studio: Studio
     let itemID: UUID?
@@ -169,7 +254,7 @@ struct ItemMenu: View {
             Button("Fit to Screen") { studio.transform(itemID, .fit) }
             Button("Stretch to Screen") { studio.transform(itemID, .stretch) }
             Button("Center") { studio.transform(itemID, .center) }
-            Button("Reset Size & Crop") { studio.transform(itemID, .reset) }
+            Button("Reset Size and Crop") { studio.transform(itemID, .reset) }
             Divider()
             Button(item.visible ? "Hide" : "Show") { studio.updateItem(itemID) { $0.visible.toggle() } }
             Button(item.locked ? "Unlock" : "Lock") { studio.updateItem(itemID) { $0.locked.toggle() } }
@@ -178,7 +263,7 @@ struct ItemMenu: View {
             Divider()
             Button("Remove", role: .destructive) { studio.removeItem(itemID) }
         } else {
-            Text("Click a source in the preview to select it")
+            Text("Select a source first")
         }
     }
 }
@@ -190,13 +275,13 @@ struct PanelHeader<Trailing: View>: View {
     @ViewBuilder var trailing: Trailing
 
     var body: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: 2) {
             Text(title).font(.headline)
             Spacer()
             trailing
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 5)
     }
 }
 
@@ -208,14 +293,17 @@ private struct ScenesPanel: View {
     var body: some View {
         VStack(spacing: 0) {
             PanelHeader(title: "Scenes") {
-                Button { studio.addScene() } label: { Image(systemName: "plus") }.buttonStyle(.borderless)
+                Button { studio.addScene() } label: { Image(systemName: "plus") }.buttonStyle(IconButtonStyle())
                 Button { studio.removeScene(studio.project.currentSceneID) } label: { Image(systemName: "minus") }
-                    .buttonStyle(.borderless).disabled(studio.project.scenes.count < 2)
+                    .buttonStyle(IconButtonStyle()).disabled(studio.project.scenes.count < 2)
             }
-            List(selection: Binding(get: { studio.project.currentSceneID },
-                                    set: { if let id = $0 { studio.project.currentSceneID = id } })) {
-                ForEach(studio.project.scenes) { scene in
-                    Text(scene.name).tag(scene.id)
+            ScrollView {
+                VStack(spacing: 0) {
+                    ForEach(studio.project.scenes) { scene in
+                        FlatRow(selected: scene.id == studio.project.currentSceneID) {
+                            Text(scene.name).lineLimit(1)
+                        }
+                        .onTapGesture { studio.project.currentSceneID = scene.id }
                         .contextMenu {
                             Button("Rename…") { newName = scene.name; renaming = scene.id }
                             Button("Duplicate") { studio.duplicateScene(scene.id) }
@@ -225,9 +313,9 @@ private struct ScenesPanel: View {
                             Button("Remove", role: .destructive) { studio.removeScene(scene.id) }
                                 .disabled(studio.project.scenes.count < 2)
                         }
+                    }
                 }
             }
-            .listStyle(.inset)
         }
         .alert("Rename Scene", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
             TextField("Name", text: $newName)
@@ -251,36 +339,33 @@ private struct SourcesPanel: View {
             PanelHeader(title: "Sources") {
                 AddSourceMenu()
                 Button { if let id = studio.selectedItemID { studio.removeItem(id) } } label: { Image(systemName: "minus") }
-                    .buttonStyle(.borderless).disabled(studio.selectedItemID == nil)
+                    .buttonStyle(IconButtonStyle()).disabled(studio.selectedItemID == nil)
                 Button { if let id = studio.selectedItemID { studio.moveItem(id, by: 1) } } label: { Image(systemName: "chevron.up") }
-                    .buttonStyle(.borderless).disabled(studio.selectedItemID == nil)
+                    .buttonStyle(IconButtonStyle()).disabled(studio.selectedItemID == nil)
                 Button { if let id = studio.selectedItemID { studio.moveItem(id, by: -1) } } label: { Image(systemName: "chevron.down") }
-                    .buttonStyle(.borderless).disabled(studio.selectedItemID == nil)
+                    .buttonStyle(IconButtonStyle()).disabled(studio.selectedItemID == nil)
             }
-            List(selection: $studio.selectedItemID) {
-                ForEach(items) { item in
-                    let source = studio.project.videoSource(item.sourceID)
-                    HStack(spacing: 6) {
-                        Image(systemName: source?.kind.symbol ?? "questionmark").frame(width: 16)
-                        Text(source?.name ?? "Missing").lineLimit(1)
-                            .foregroundStyle(item.visible ? .primary : .secondary)
-                        Spacer()
-                        Button { studio.updateItem(item.id) { $0.visible.toggle() } } label: {
-                            Image(systemName: item.visible ? "eye" : "eye.slash")
-                        }.buttonStyle(.borderless)
-                        Button { studio.updateItem(item.id) { $0.locked.toggle() } } label: {
-                            Image(systemName: item.locked ? "lock" : "lock.open")
-                        }.buttonStyle(.borderless)
+            ScrollView {
+                VStack(spacing: 0) {
+                    ForEach(items) { item in
+                        let source = studio.project.videoSource(item.sourceID)
+                        FlatRow(selected: item.id == studio.selectedItemID) {
+                            Image(systemName: source?.kind.symbol ?? "questionmark").frame(width: 16)
+                            Text(source?.name ?? "Missing").lineLimit(1)
+                                .foregroundStyle(item.visible ? .primary : .secondary)
+                            Spacer()
+                            Button { studio.updateItem(item.id) { $0.visible.toggle() } } label: {
+                                Image(systemName: item.visible ? "eye" : "eye.slash")
+                            }.buttonStyle(IconButtonStyle())
+                            Button { studio.updateItem(item.id) { $0.locked.toggle() } } label: {
+                                Image(systemName: item.locked ? "lock" : "lock.open")
+                            }.buttonStyle(IconButtonStyle())
+                        }
+                        .onTapGesture(count: 2) { studio.editingSourceID = item.sourceID }
+                        .onTapGesture { studio.selectedItemID = item.id }
+                        .contextMenu { ItemMenu(itemID: item.id) }
                     }
-                    .tag(item.id)
                 }
-            }
-            .listStyle(.inset)
-            .contextMenu(forSelectionType: UUID.self) { ids in
-                ItemMenu(itemID: ids.first)
-            } primaryAction: { ids in
-                // Double-click opens properties.
-                if let id = ids.first, let item = studio.item(id) { studio.editingSourceID = item.sourceID }
             }
         }
     }
@@ -328,7 +413,7 @@ private struct AddSourceMenu: View {
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
-        .fixedSize()
+        .frame(width: 22)
         .onAppear { Task { await studio.refreshPickers() } }
     }
 }
@@ -337,41 +422,23 @@ private struct ControlsPanel: View {
     @EnvironmentObject var studio: Studio
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Controls").font(.headline)
-            Button { studio.toggleStreaming() } label: {
-                Label(studio.isStreaming ? "End Stream" : "Go Live",
-                      systemImage: studio.isStreaming ? "stop.fill" : "dot.radiowaves.left.and.right")
-                    .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(.borderedProminent)
-            .tint(studio.isStreaming ? Color.purple : Color.accentColor)
-            .disabled(studio.isBusy)
-
-            Button { studio.toggleRecording() } label: {
-                Label(studio.isRecording ? "Stop Recording" : "Start Recording",
-                      systemImage: studio.isRecording ? "stop.fill" : "record.circle")
-                    .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(.borderedProminent)
-            .tint(studio.isRecording ? Color.red : Color.accentColor)
-
-            SettingsLink {
-                Label("Settings", systemImage: "gearshape").frame(maxWidth: .infinity)
-            }
-            Button { studio.revealRecordings() } label: {
-                Label("Recordings", systemImage: "folder").frame(maxWidth: .infinity)
-            }
-            if let last = studio.lastRecording {
-                Button { studio.remuxToMP4(last) } label: {
-                    Label("Remux Last to MP4", systemImage: "arrow.triangle.2.circlepath").frame(maxWidth: .infinity)
-                }
-                .help("Copies the .mkv into an .mp4 (no quality loss). Needs ffmpeg: brew install ffmpeg")
-            }
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Controls").font(.headline).padding(.bottom, 2)
+            Button(studio.isStreaming ? "Stop Streaming" : "Start Streaming") { studio.toggleStreaming() }
+                .buttonStyle(FlatButtonStyle(active: studio.isStreaming, fullWidth: true))
+                .disabled(studio.isBusy)
+            Button(studio.isRecording ? "Stop Recording" : "Start Recording") { studio.toggleRecording() }
+                .buttonStyle(FlatButtonStyle(active: studio.isRecording, fullWidth: true))
+            SettingsLink { Text("Settings") }
+                .buttonStyle(FlatButtonStyle(fullWidth: true))
+            Button("Recordings") { studio.revealRecordings() }
+                .buttonStyle(FlatButtonStyle(fullWidth: true))
+            Button(studio.previewHidden ? "Show Preview" : "Hide Preview") { studio.previewHidden.toggle() }
+                .buttonStyle(FlatButtonStyle(fullWidth: true))
             Spacer()
             LiveTimers()
         }
-        .padding(10)
+        .padding(8)
     }
 }
 
@@ -382,13 +449,12 @@ private struct LiveTimers: View {
         TimelineView(.periodic(from: .now, by: 1)) { context in
             VStack(alignment: .leading, spacing: 2) {
                 if let start = studio.streamStarted {
-                    Label("LIVE \(elapsed(start, context.date))", systemImage: "antenna.radiowaves.left.and.right")
-                        .foregroundStyle(.purple)
+                    Text("LIVE \(elapsed(start, context.date))").foregroundStyle(Theme.active)
                 } else if case .reconnecting(let n) = studio.streamState {
-                    Label("Reconnecting (\(n))…", systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
+                    Text("Reconnecting (\(n))…").foregroundStyle(.orange)
                 }
                 if let start = studio.recordStarted {
-                    Label("REC \(elapsed(start, context.date))", systemImage: "record.circle.fill").foregroundStyle(.red)
+                    Text("REC \(elapsed(start, context.date))").foregroundStyle(Theme.active)
                 }
             }
             .font(.callout.monospacedDigit())
@@ -415,16 +481,18 @@ private struct StatusBarContent: View {
             Text(studio.message).lineLimit(1).truncationMode(.tail).foregroundStyle(.secondary)
             Spacer()
             if let problem = stats.sourceProblems.first {
-                Label(problem, systemImage: "exclamationmark.triangle").foregroundStyle(.orange).lineLimit(1)
+                Text(problem).foregroundStyle(.orange).lineLimit(1)
                     .help(stats.sourceProblems.joined(separator: "\n"))
             }
+            Text(String(format: "CPU %.1f%%", stats.cpu))
+            if let gpu = stats.gpu { Text(String(format: "GPU %.0f%%", gpu)) }
+            Text(String(format: "%.1f / %d fps", stats.fps, studio.project.video.fps))
+            Text("skipped \(stats.skipped)").foregroundStyle(stats.skipped > 0 ? Color.orange : Color.secondary)
             if studio.isStreaming {
-                Text("\(stats.streamKbps) kbps").foregroundStyle(stats.congested ? Color.orange : Color.secondary)
-                if stats.dropped > 0 { Text("\(stats.dropped) dropped").foregroundStyle(.orange) }
+                Text("\(stats.streamKbps) kb/s").foregroundStyle(stats.congested ? Color.orange : Color.primary)
+                Text("dropped \(stats.dropped)").foregroundStyle(stats.dropped > 0 ? Color.orange : Color.secondary)
             }
             if studio.isRecording { Text(String(format: "%.0f MB", stats.recordMB)) }
-            Text("\(Int(stats.fps.rounded())) / \(studio.project.video.fps) fps")
-            Text("\(studio.project.video.width)×\(studio.project.video.height)")
         }
         .font(.caption.monospacedDigit())
         .padding(.horizontal, 10)

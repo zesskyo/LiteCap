@@ -1,6 +1,5 @@
 import AppKit
 import AVFoundation
-import Carbon.HIToolbox
 import LiteCapCore
 import ScreenCaptureKit
 
@@ -30,16 +29,19 @@ final class LiveStats: ObservableObject {
     @Published var dropped = 0
     @Published var congested = false
     @Published var recordMB = 0.0
+    @Published var skipped = 0
+    @Published var cpu = 0.0
+    @Published var gpu: Double?
     @Published var sourceProblems: [String] = []
 }
 
 /// Routes canvas frames and track audio to whichever outputs are running (any thread).
 final class OutputHub: @unchecked Sendable {
     private let lock = NSLock()
-    private var recording: RecordingOutput?
+    private var recording: Recorder?
     private var stream: StreamOutput?
 
-    func set(recording: RecordingOutput?) { lock.withLock { self.recording = recording } }
+    func set(recording: Recorder?) { lock.withLock { self.recording = recording } }
     func set(stream: StreamOutput?) { lock.withLock { self.stream = stream } }
     var isEmpty: Bool { lock.withLock { recording == nil && stream == nil } }
 
@@ -70,6 +72,7 @@ final class Studio: ObservableObject {
     @Published var selectedItemID: UUID?
     @Published var editingSourceID: UUID?
     @Published var filtersSourceID: UUID?
+    @Published var showingTracks = false
     @Published private(set) var isRecording = false
     @Published private(set) var isStreaming = false
     @Published private(set) var isBusy = false
@@ -97,7 +100,7 @@ final class Studio: ObservableObject {
     private var sourceFPS = 0
     private var renderedSceneID: UUID?
     private var sceneSwitch: Task<Void, Never>?
-    private var recording: RecordingOutput?
+    private var recording: Recorder?
     private var stream: StreamOutput?
     private var previewClients = 0
     private var isNormalizing = false
@@ -116,19 +119,29 @@ final class Studio: ObservableObject {
         compositor.setFrameHandler { @Sendable [hub] buffer, pts in hub.video(buffer, pts) }
         audio.onMessage = { @Sendable [weak self] text in Task { @MainActor in self?.message = text } }
         audio.sync(project.audioSources)
-        audio.setListenTrack(project.listenTrack)
-
-        let mods = cmdKey | optionKey | controlKey
-        HotKeys.shared.register(keyCode: kVK_ANSI_R, modifiers: mods) { [weak self] in
-            Task { @MainActor in self?.toggleRecording() }
-        }
-        HotKeys.shared.register(keyCode: kVK_ANSI_S, modifiers: mods) { [weak self] in
-            Task { @MainActor in self?.toggleStreaming() }
-        }
         Task { await refreshPickers() }
     }
 
-    // MARK: - Activity (nothing runs unless the preview is open or you're live)
+    // MARK: - Activity
+    // Video (capture + compositor) runs while the preview is showing or you're live.
+    // Audio (mixer, meters, monitoring) runs while the main window is open or you're live.
+
+    @Published var previewHidden = UserDefaults.standard.bool(forKey: "previewHidden") {
+        didSet { UserDefaults.standard.set(previewHidden, forKey: "previewHidden") }
+    }
+    private var windowClients = 0
+    private(set) var isAudioActive = false
+    private let usage = UsageSampler()
+
+    func windowAppeared() {
+        windowClients += 1
+        updateActive()
+    }
+
+    func windowDisappeared() {
+        windowClients = max(0, windowClients - 1)
+        updateActive()
+    }
 
     func previewAppeared() {
         previewClients += 1
@@ -141,16 +154,25 @@ final class Studio: ObservableObject {
     }
 
     private func updateActive() {
-        let want = previewClients > 0 || isLive
-        guard want != isActive else { return }
-        isActive = want
-        if want {
+        let wantAudio = windowClients > 0 || isLive
+        if wantAudio != isAudioActive {
+            isAudioActive = wantAudio
+            if wantAudio {
+                audio.start()
+                startTimers()
+            } else {
+                audio.stop()
+                stopTimers()
+            }
+        }
+        let wantVideo = previewClients > 0 || isLive
+        guard wantVideo != isActive else { return }
+        isActive = wantVideo
+        if wantVideo {
             compositor.configure(width: project.video.width, height: project.video.height, fps: project.video.fps)
             compositor.start()
-            audio.start()
             renderedSceneID = nil
             syncVideo()
-            startTimers()
         } else {
             sceneSwitch?.cancel()
             sources.values.forEach { $0.stop() }
@@ -158,8 +180,6 @@ final class Studio: ObservableObject {
             renderedSceneID = nil
             compositor.setLayers([])
             compositor.stop()
-            audio.stop()
-            stopTimers()
         }
     }
 
@@ -201,7 +221,11 @@ final class Studio: ObservableObject {
     }
 
     private func updateStats() async {
-        stats.fps = compositor.fpsMeasured
+        stats.fps = isActive ? compositor.fpsMeasured : 0
+        stats.skipped = compositor.skippedFrames
+        let sample = usage.sample()
+        stats.cpu = sample.cpu
+        stats.gpu = sample.gpu
         if let recording { stats.recordMB = Double(recording.bytesWritten) / 1_048_576 }
         if let stream {
             let s = await stream.stats()
@@ -227,6 +251,7 @@ final class Studio: ObservableObject {
         var fixed = project
         fixed.video.width = max(16, min(7680, fixed.video.width)) & ~1
         fixed.video.height = max(16, min(4320, fixed.video.height)) & ~1
+        fixed.video.fps = max(1, min(240, fixed.video.fps))
         fixed.record.bitrateKbps = max(500, min(500_000, fixed.record.bitrateKbps))
         fixed.stream.bitrateKbps = max(300, min(100_000, fixed.stream.bitrateKbps))
         fixed.record.audioKbps = max(64, min(320, fixed.record.audioKbps))
@@ -238,7 +263,6 @@ final class Studio: ObservableObject {
         }
         scheduleSave()
         if old.audioSources != project.audioSources { audio.sync(project.audioSources) }
-        if old.listenTrack != project.listenTrack { audio.setListenTrack(project.listenTrack) }
         if old.video != project.video, isActive {
             compositor.configure(width: project.video.width, height: project.video.height, fps: project.video.fps)
             if old.video.fps != project.video.fps {
@@ -356,7 +380,10 @@ final class Studio: ObservableObject {
         for s in project.scenes.indices {
             for i in project.scenes[s].items.indices where project.scenes[s].items[i].sourceID == id
                 && project.scenes[s].items[i].frame == nil {
-                project.scenes[s].items[i].frame = Self.fit(size, canvasW, canvasH, stretch: false, onlyIfLarger: true)
+                // Bigger than the canvas: fit it. Otherwise native size, snapped to the top-left corner.
+                project.scenes[s].items[i].frame = Double(size.width) > canvasW || Double(size.height) > canvasH
+                    ? Self.fit(size, canvasW, canvasH, stretch: false)
+                    : CanvasRect(x: 0, y: 0, w: Double(size.width), h: Double(size.height))
             }
         }
     }
@@ -591,7 +618,7 @@ final class Studio: ObservableObject {
     func startRecording() {
         guard !isRecording else { return }
         do {
-            let output = try RecordingOutput(
+            let output = try Recorders.make(
                 folder: URL(fileURLWithPath: project.record.folder), settings: project.record,
                 canvas: project.video, trackNames: project.trackNames
             )
@@ -628,6 +655,7 @@ final class Studio: ObservableObject {
                 case .success(let url):
                     self?.lastRecording = url
                     self?.message = "Saved \(url.lastPathComponent)"
+                    if self?.project.record.autoRemux == true, url.pathExtension == "mkv" { self?.remuxToMP4(url) }
                 case .failure(let error):
                     self?.message = "Recording error: \(error.localizedDescription)"
                 }

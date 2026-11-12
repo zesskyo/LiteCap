@@ -9,28 +9,31 @@ A lightweight recorder and streamer for Apple Silicon Macs (macOS 15+), built on
 **Scenes and sources**
 - Multiple scenes. When you switch, the next scene's sources start first and the cut happens once they have a picture, so you don't get a black flash.
 - Source types: Display Capture, Window Capture (as many as you want), Browser (transparent background, custom CSS, "Interact…" to log in), Image, and Camera / Capture Card.
-- Live preview. Click a source to select it, drag to move it, and drag a corner to resize (hold ⇧ to ignore the aspect ratio). Edges snap. Right-click for Fit, Stretch, Center, Reset, Lock and Hide.
+- Live preview. Click a source to select it, drag to move it, and drag a corner to resize (hold ⇧ to ignore the aspect ratio). Edges and centers snap to the canvas and to other sources (hold ⌘ to place freely). Right-click for Fit, Stretch, Center, Reset, Lock and Hide.
+- The preview can be hidden. When it's hidden and you're not live, video capture stops completely.
 - Crop and exact position/size are in each source's Properties (double-click it in the Sources list).
 - Window and display capture rebuild themselves automatically if macOS stops sending frames (the freeze fix from v1).
 
 **Audio mixer**
 - Audio source types: Desktop Audio, Application Audio (a single app), and any Microphone / Input (audio interfaces and capture-card audio too).
-- Each source has a volume fader, a stereo meter, mute, and a 🎧 monitor button.
-- There are 6 tracks, and each source can go to any combination of them (⚙︎ ▸ Tracks).
-- **Listen**: pick a track at the top of the mixer to hear exactly that mix on your headphones.
+- Each source is a vertical strip with a fader (double-click for 0 dB), a stereo meter, mute, and a 🎧 monitor button.
+- There are 6 tracks, and each source can go to any combination of them. Set this in the Tracks window (the sliders button in the mixer header), which works like OBS's Advanced Audio Properties.
 - **Filters**: Audio Unit plugins (AUv2 and AUv3), including third-party ones and Apple's built-ins (compressor/gate, EQ, limiter, …). Each plugin opens its own editor, and its settings are saved.
 
 **Outputs**
-- Recording: MKV with multiple audio tracks, encoded by the hardware H.264 or HEVC encoder at a bitrate you type in. MKV is crash-safe: if the app or your Mac crashes, the file is still playable up to about a second before the crash. "Remux Last to MP4" converts the file for editors that don't open MKV (needs `brew install ffmpeg`).
+- Recording: MKV, MP4 or MOV with multiple audio tracks, using the hardware H.264 or H.265 encoder at a bitrate you type in.
+  - MKV is crash-safe: if the app or your Mac crashes, the file is still playable up to about a second before the crash. It can be remuxed to MP4 automatically after each recording (Settings → Recording, needs `brew install ffmpeg`).
+  - MOV is written in 5-second fragments, so a crash loses at most a few seconds.
+  - MP4 is only readable once recording stops cleanly.
 - Streaming: RTMP or RTMPS to Twitch, YouTube, Kick or any custom server.
   - Bitrate is typeable, with an optional CBR mode and an optional downscale for the stream.
   - Auto-reconnect.
   - When the connection is too slow, it drops video frames until the next keyframe, like OBS does.
 - **Twitch VOD track**: a second audio track that only ends up in your VODs, sent the same way OBS sends it.
 - Settings live in their own window (⌘, or the Settings button).
-- Global hotkeys: ⌃⌥⌘R record, ⌃⌥⌘S stream. There's also a menu bar icon with scene switching.
+- The status bar shows CPU (LiteCap's share of the whole Mac), GPU (whole GPU), fps, skipped (render) frames, and while live, bitrate and dropped (network) frames.
 
-**Power use:** when the main window is closed and you're not live, nothing runs.
+**Power use:** with the preview hidden, only the audio mixer runs until you go live. Closing the window quits LiteCap; any recording is finished cleanly first.
 
 ### About VST plugins
 macOS plugins come as **Audio Units**, and almost every VST maker also installs an AU version on Mac (FabFilter, Waves, iZotope, Valhalla, TDR, …). LiteCap hosts those. Hosting the VST3 format itself would need Steinberg's SDK and its license.

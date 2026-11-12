@@ -27,15 +27,33 @@ struct MainView: View {
         .textFieldStyle(.squareBorder)
         .onAppear { studio.windowAppeared() }
         .onDisappear { studio.windowDisappeared() }
-        .sheet(item: Binding(get: { studio.editingSourceID.map(IdentifiedID.init) },
-                             set: { studio.editingSourceID = $0?.id })) { wrapped in
-            SourcePropertiesSheet(sourceID: wrapped.id)
+        .overlay { dialog }
+    }
+
+    /// Dialogs are square panels inside the window (macOS sheets have rounded corners).
+    @ViewBuilder private var dialog: some View {
+        if let id = studio.editingSourceID {
+            ModalPanel { SourcePropertiesSheet(sourceID: id).id(id) }
+        } else if let id = studio.filtersSourceID {
+            ModalPanel { FiltersSheet(sourceID: id).id(id) }
+        } else if studio.showingTracks {
+            ModalPanel { TracksSheet() }
         }
-        .sheet(item: Binding(get: { studio.filtersSourceID.map(IdentifiedID.init) },
-                             set: { studio.filtersSourceID = $0?.id })) { wrapped in
-            FiltersSheet(sourceID: wrapped.id)
+    }
+}
+
+/// Dims the window and shows a square panel on top.
+struct ModalPanel<Content: View>: View {
+    @ViewBuilder var content: Content
+
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.35).contentShape(Rectangle()).onTapGesture {}
+            content
+                .background(Color(nsColor: .windowBackgroundColor))
+                .overlay(Rectangle().stroke(Color.gray.opacity(0.4), lineWidth: 1))
+                .shadow(radius: 12)
         }
-        .sheet(isPresented: $studio.showingTracks) { TracksSheet() }
     }
 }
 
@@ -477,7 +495,7 @@ private struct ControlsPanel: View {
                 .disabled(studio.isBusy)
             Button(studio.isRecording ? "Stop Recording" : "Start Recording") { studio.toggleRecording() }
                 .buttonStyle(FlatButtonStyle(active: studio.isRecording, fullWidth: true))
-            SettingsLink { Text("Settings") }
+            Button("Settings") { AppWindows.showSettings() }
                 .buttonStyle(FlatButtonStyle(fullWidth: true))
             Button("Recordings") { studio.revealRecordings() }
                 .buttonStyle(FlatButtonStyle(fullWidth: true))

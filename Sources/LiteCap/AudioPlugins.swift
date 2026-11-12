@@ -46,7 +46,7 @@ enum AudioPlugins {
 /// (e.g. FabFilter) hand out their editor only once, so asking again would get no editor.
 @MainActor
 enum PluginWindows {
-    private static var windows: [UUID: NSWindow] = [:]
+    private static var windows: [UUID: SquareWindow] = [:]
     private static var pending: Set<UUID> = []
 
     static func show(_ unit: AVAudioUnit, id: UUID, title: String) {
@@ -62,12 +62,13 @@ enum PluginWindows {
                 pending.remove(id)
                 let content: NSViewController = controller
                     ?? NSHostingController(rootView: GenericPluginView(unit: unit.auAudioUnit))
-                let window = NSWindow(contentViewController: content)
-                window.title = title
-                window.styleMask.insert([.titled, .closable])
-                window.isReleasedWhenClosed = false // closing just hides it; we reuse it next time
                 let preferred = content.preferredContentSize
-                if preferred.width > 50 && preferred.height > 50 { window.setContentSize(preferred) }
+                let fitting = content.view.fittingSize
+                let size = preferred.width > 50 && preferred.height > 50 ? preferred
+                    : (fitting.width > 50 && fitting.height > 50 ? fitting : NSSize(width: 600, height: 400))
+                let window = SquareWindow(title: title, content: content.view, size: size)
+                window.hostedController = content
+                window.onClose = { [weak window] in window?.orderOut(nil) } // hide; reused next time
                 window.center()
                 window.makeKeyAndOrderFront(nil)
                 windows[id] = window

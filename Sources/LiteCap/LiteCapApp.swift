@@ -6,8 +6,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let studio = Studio()
     lazy var updater = Updater(isLive: { [unowned self] in self.studio.isLive })
 
-    /// No menu bar icon, so closing the main window quits (like OBS); recordings still finish cleanly.
-    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        AppWindows.studio = studio
+        AppWindows.updater = updater
+        AppWindows.showMain()
+    }
+
+    /// Clicking the Dock icon brings the main window back.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        AppWindows.showMain()
+        return true
+    }
 
     /// Finish the recording file / end the stream cleanly before quitting.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
@@ -26,17 +35,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 struct LiteCapApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
 
+    // LiteCap makes its own square windows (see AppWindows); this scene only supplies menu commands.
     var body: some Scene {
-        Window("LiteCap", id: "main") {
-            MainView().environmentObject(delegate.studio)
-        }
-        .defaultSize(width: 1180, height: 820)
-        .commands {
-            CommandGroup(after: .appInfo) { CheckForUpdatesButton(updater: delegate.updater) }
-        }
-
-        Settings {
-            SettingsView().environmentObject(delegate.studio).environmentObject(delegate.updater)
-        }
+        Settings { EmptyView() }
+            .commands {
+                CommandGroup(replacing: .appSettings) {
+                    Button("Settings…") { AppWindows.showSettings() }.keyboardShortcut(",", modifiers: .command)
+                }
+                CommandGroup(after: .appInfo) { CheckForUpdatesButton(updater: delegate.updater) }
+                CommandGroup(replacing: .newItem) {}
+            }
     }
 }

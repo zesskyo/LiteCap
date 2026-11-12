@@ -191,7 +191,6 @@ private struct Meter: View {
 /// Which of the 6 tracks each source goes to (like OBS's Advanced Audio Properties).
 struct TracksSheet: View {
     @EnvironmentObject var studio: Studio
-    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -224,7 +223,7 @@ struct TracksSheet: View {
             Divider()
             HStack {
                 Spacer()
-                Button("Done") { dismiss() }.buttonStyle(FlatButtonStyle()).keyboardShortcut(.defaultAction)
+                Button("Done") { studio.showingTracks = false }.buttonStyle(FlatButtonStyle()).keyboardShortcut(.defaultAction)
             }
             .padding(12)
         }

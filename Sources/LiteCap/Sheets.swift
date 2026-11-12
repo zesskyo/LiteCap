@@ -6,7 +6,6 @@ import SwiftUI
 
 struct SourcePropertiesSheet: View {
     @EnvironmentObject var studio: Studio
-    @Environment(\.dismiss) private var dismiss
     let sourceID: UUID
     @State private var draft: VideoSourceConfig?
 
@@ -35,9 +34,9 @@ struct SourcePropertiesSheet: View {
                     Button("Reload") { studio.browserSource(sourceID)?.reload() }
                 }
                 Spacer()
-                Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
+                Button("Cancel") { studio.editingSourceID = nil }.keyboardShortcut(.cancelAction)
                 Button("Apply") { apply() }
-                Button("Done") { apply(); dismiss() }.keyboardShortcut(.defaultAction)
+                Button("Done") { apply(); studio.editingSourceID = nil }.keyboardShortcut(.defaultAction)
             }
             .padding(12)
         }
@@ -178,7 +177,6 @@ private struct TransformEditor: View {
 
 struct FiltersSheet: View {
     @EnvironmentObject var studio: Studio
-    @Environment(\.dismiss) private var dismiss
     let sourceID: UUID
     @State private var plugins: [AVAudioUnitComponent] = []
 
@@ -235,7 +233,7 @@ struct FiltersSheet: View {
                 Text("Filters run top to bottom. Turn on 🎧 in the mixer to hear the result.")
                     .font(.caption).foregroundStyle(.secondary)
                 Spacer()
-                Button("Done") { dismiss() }.keyboardShortcut(.defaultAction)
+                Button("Done") { studio.filtersSourceID = nil }.keyboardShortcut(.defaultAction)
             }
             .padding(12)
         }

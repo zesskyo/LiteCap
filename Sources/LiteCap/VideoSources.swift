@@ -369,9 +369,9 @@ private final class OffscreenWindow: NSWindow {
 }
 
 /// Renders a web page (alerts, chat, overlays) with a transparent background.
-final class BrowserSource: VideoSource, WKNavigationDelegate, NSWindowDelegate {
+final class BrowserSource: VideoSource, WKNavigationDelegate {
     private var hostWindow: NSWindow?
-    private var interactWindow: NSWindow?
+    private var interactWindow: SquareWindow?
     private var webView: WKWebView?
     private var timer: Timer?
     private var snapshotting = false
@@ -388,7 +388,7 @@ final class BrowserSource: VideoSource, WKNavigationDelegate, NSWindowDelegate {
             self.timer?.invalidate()
             self.timer = nil
             self.webView?.stopLoading()
-            self.interactWindow?.close()
+            self.endInteract()
             self.hostWindow?.orderOut(nil)
             self.webView = nil
             self.hostWindow = nil
@@ -415,13 +415,10 @@ final class BrowserSource: VideoSource, WKNavigationDelegate, NSWindowDelegate {
         DispatchQueue.main.async {
             guard let webView = self.webView, self.interactWindow == nil,
                   case .browser(_, let w, let h, _, _) = self.config.kind else { return }
-            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: w, height: h),
-                                  styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
-            window.title = "\(self.config.name) — close this window when done"
-            window.isReleasedWhenClosed = false
-            window.delegate = self
             webView.removeFromSuperview()
-            window.contentView = webView
+            let window = SquareWindow(title: "\(self.config.name) — close when done", content: webView,
+                                      size: NSSize(width: w, height: h))
+            window.onClose = { [weak self] in self?.endInteract() }
             window.center()
             window.makeKeyAndOrderFront(nil)
             NSApp.activate()
@@ -429,12 +426,16 @@ final class BrowserSource: VideoSource, WKNavigationDelegate, NSWindowDelegate {
         }
     }
 
-    func windowWillClose(_ notification: Notification) {
+    /// Puts the page back into its off-screen window when the Interact window is closed.
+    private func endInteract() {
+        let window = interactWindow
+        interactWindow = nil
+        window?.orderOut(nil)
         guard let webView, let host = hostWindow, case .browser(_, let w, let h, _, _) = config.kind else { return }
         webView.removeFromSuperview()
+        webView.translatesAutoresizingMaskIntoConstraints = true
         webView.frame = NSRect(x: 0, y: 0, width: w, height: h)
         host.contentView = webView
-        interactWindow = nil
     }
 
     private func setUp() {

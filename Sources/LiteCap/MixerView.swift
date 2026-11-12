@@ -58,6 +58,7 @@ private struct ChannelStrip: View {
     let sourceID: UUID
     @State private var renaming = false
     @State private var newName = ""
+    @State private var dropTargeted = false
 
     var body: some View {
         if let source = studio.project.audioSources.first(where: { $0.id == sourceID }) {
@@ -85,6 +86,9 @@ private struct ChannelStrip: View {
                         Button("Tracks…") { studio.showingTracks = true }
                         Button("Rename…") { newName = source.name; renaming = true }
                         Divider()
+                        Button("Move Left") { studio.moveAudioSource(sourceID, by: -1) }
+                        Button("Move Right") { studio.moveAudioSource(sourceID, by: 1) }
+                        Divider()
                         Button("Remove", role: .destructive) { studio.removeAudioSource(sourceID) }
                     } label: {
                         Image(systemName: "gearshape")
@@ -93,11 +97,20 @@ private struct ChannelStrip: View {
                 }
                 Text(source.name).font(.caption).lineLimit(1).truncationMode(.middle)
                     .foregroundStyle(source.filters.isEmpty ? Color.primary : Theme.active)
-                    .help(source.filters.isEmpty ? source.name : "\(source.name) — \(source.filters.count) filter(s)")
+                    .frame(maxWidth: .infinity)
+                    .contentShape(Rectangle())
+                    .help("Drag the name to reorder")
+                    .draggable(sourceID.uuidString)
             }
             .frame(width: 84)
             .padding(.vertical, 6)
-            .background(Theme.panel)
+            .background(dropTargeted ? Theme.selection : Theme.panel)
+            .dropDestination(for: String.self) { items, _ in
+                guard let raw = items.first, let dragged = UUID(uuidString: raw), dragged != sourceID,
+                      let target = studio.project.audioSources.firstIndex(where: { $0.id == sourceID }) else { return false }
+                studio.moveAudioSource(dragged, to: target)
+                return true
+            } isTargeted: { dropTargeted = $0 }
             .alert("Rename Audio Source", isPresented: $renaming) {
                 TextField("Name", text: $newName)
                 Button("Rename") { if !newName.isEmpty { studio.updateAudioSource(sourceID) { $0.name = newName } } }

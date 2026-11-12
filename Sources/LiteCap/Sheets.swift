@@ -57,7 +57,11 @@ struct SourcePropertiesSheet: View {
 
     private func apply() {
         guard let draft else { return }
-        studio.updateVideoSource(sourceID) { $0 = draft }
+        studio.updateVideoSource(sourceID) { config in
+            let linkedAudio = config.audioSourceID // managed by Studio; the draft's copy may be stale
+            config = draft
+            config.audioSourceID = linkedAudio
+        }
     }
 }
 
@@ -73,6 +77,9 @@ private struct KindEditor: View {
                 ForEach(studio.displays) { Text($0.title).tag($0.id) }
             }
             Toggle("Capture cursor", isOn: $config.showCursor)
+            Toggle("Hide Dock and menu bar", isOn: Binding(
+                get: { config.hideSystemUI == true }, set: { config.hideSystemUI = $0 }
+            ))
         case .window(let id, _, let title):
             Picker("Window", selection: Binding(get: { id }, set: { newID in
                 if let w = studio.windows.first(where: { $0.id == newID }) {
@@ -86,6 +93,10 @@ private struct KindEditor: View {
             }
             Button("Refresh Window List") { Task { await studio.refreshPickers() } }
             Toggle("Capture cursor", isOn: $config.showCursor)
+            Toggle("Capture audio", isOn: Binding(
+                get: { config.captureAudio == true }, set: { config.captureAudio = $0 }
+            ))
+            .help("Adds this window's app audio to the mixer as its own channel")
             Text("Window capture keeps working when the window is covered, but freezes while it's minimized.")
                 .font(.caption).foregroundStyle(.secondary)
         case .browser(let url, let width, let height, let css, let fps):
@@ -147,12 +158,12 @@ private struct TransformEditor: View {
             }
             Section("Crop (source pixels)") {
                 HStack {
-                    number("Left", item.crop.left) { v in studio.updateItem(itemID) { $0.crop.left = max(0, v) } }
-                    number("Right", item.crop.right) { v in studio.updateItem(itemID) { $0.crop.right = max(0, v) } }
+                    number("Left", item.crop.left) { v in var c = item.crop; c.left = v; studio.setCrop(itemID, c) }
+                    number("Right", item.crop.right) { v in var c = item.crop; c.right = v; studio.setCrop(itemID, c) }
                 }
                 HStack {
-                    number("Top", item.crop.top) { v in studio.updateItem(itemID) { $0.crop.top = max(0, v) } }
-                    number("Bottom", item.crop.bottom) { v in studio.updateItem(itemID) { $0.crop.bottom = max(0, v) } }
+                    number("Top", item.crop.top) { v in var c = item.crop; c.top = v; studio.setCrop(itemID, c) }
+                    number("Bottom", item.crop.bottom) { v in var c = item.crop; c.bottom = v; studio.setCrop(itemID, c) }
                 }
             }
         }

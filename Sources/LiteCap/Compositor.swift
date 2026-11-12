@@ -226,7 +226,7 @@ struct PreviewSurface: NSViewRepresentable {
         let view = MTKView(frame: .zero, device: compositor.device)
         view.colorPixelFormat = .bgra8Unorm
         view.clearColor = MTLClearColor(red: 0.09, green: 0.09, blue: 0.1, alpha: 1)
-        view.preferredFramesPerSecond = 30
+        view.preferredFramesPerSecond = 60
         view.delegate = context.coordinator
         return view
     }

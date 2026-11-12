@@ -100,6 +100,8 @@ final class Studio: ObservableObject {
     private var sourceFPS = 0
     private var renderedSceneID: UUID?
     private var sceneSwitch: Task<Void, Never>?
+    private var knownSizes: [UUID: CGSize] = [:]
+    private var dragOverride: (item: UUID, frame: CanvasRect, crop: Crop)?
     private var recording: Recorder?
     private var stream: StreamOutput?
     private var previewClients = 0
@@ -265,8 +267,9 @@ final class Studio: ObservableObject {
         if old.audioSources != project.audioSources { audio.sync(project.audioSources) }
         if old.video != project.video, isActive {
             compositor.configure(width: project.video.width, height: project.video.height, fps: project.video.fps)
-            if old.video.fps != project.video.fps {
-                // Sources capture at the canvas frame rate: rebuild them.
+            if old.video.fps != project.video.fps || old.video.width != project.video.width
+                || old.video.height != project.video.height {
+                // Sources capture at the canvas frame rate and size: rebuild them.
                 sources.values.forEach { $0.stop() }
                 sources.removeAll()
                 renderedSceneID = nil
@@ -325,7 +328,8 @@ final class Studio: ObservableObject {
             existing.apply(config)
             return existing
         }
-        let source = VideoSource.make(config, fps: project.video.fps)
+        let source = VideoSource.make(config, fps: project.video.fps,
+                                      canvas: CGSize(width: project.video.width, height: project.video.height))
         source.onSize = { @Sendable [weak self] size in
             Task { @MainActor in self?.sourceSized(id, size) }
         }
@@ -368,25 +372,98 @@ final class Studio: ObservableObject {
             return
         }
         let layers = scene.items.compactMap { item -> Compositor.Layer? in
-            guard item.visible, let frame = item.frame, let source = sources[item.sourceID] else { return nil }
-            return Compositor.Layer(source: source, frame: frame, crop: item.crop)
+            guard item.visible, var frame = item.frame, let source = sources[item.sourceID] else { return nil }
+            var crop = item.crop
+            if let drag = dragOverride, drag.item == item.id {
+                frame = drag.frame
+                crop = drag.crop
+            }
+            return Compositor.Layer(source: source, frame: frame, crop: crop)
         }
         compositor.setLayers(layers)
     }
 
-    /// First time we learn a source's size: place it at native size, or fit it if it's bigger than the canvas.
+    /// A source's pixel size became known or changed (e.g. a captured window was resized).
+    /// New items get placed; existing ones keep their scale, so the box grows/shrinks
+    /// with the source instead of stretching it.
     private func sourceSized(_ id: UUID, _ size: CGSize) {
+        let previous = knownSizes[id]
+        knownSizes[id] = size
         let canvasW = Double(project.video.width), canvasH = Double(project.video.height)
-        for s in project.scenes.indices {
-            for i in project.scenes[s].items.indices where project.scenes[s].items[i].sourceID == id
-                && project.scenes[s].items[i].frame == nil {
-                // Bigger than the canvas: fit it. Otherwise native size, snapped to the top-left corner.
-                project.scenes[s].items[i].frame = Double(size.width) > canvasW || Double(size.height) > canvasH
-                    ? Self.fit(size, canvasW, canvasH, stretch: false)
-                    : CanvasRect(x: 0, y: 0, w: Double(size.width), h: Double(size.height))
+        var scenes = project.scenes
+        for s in scenes.indices {
+            for i in scenes[s].items.indices where scenes[s].items[i].sourceID == id {
+                var item = scenes[s].items[i]
+                if item.frame == nil {
+                    // Bigger than the canvas: fit it. Otherwise native size, snapped to the top-left corner.
+                    item.frame = Double(size.width) > canvasW || Double(size.height) > canvasH
+                        ? Self.fit(size, canvasW, canvasH, stretch: false)
+                        : CanvasRect(x: 0, y: 0, w: Double(size.width), h: Double(size.height))
+                } else if let previous, previous != size, var f = item.frame {
+                    let c = item.crop
+                    let sx = f.w / max(1, Double(previous.width) - c.left - c.right)
+                    let sy = f.h / max(1, Double(previous.height) - c.top - c.bottom)
+                    f.w = max(1, Double(size.width) - c.left - c.right) * sx
+                    f.h = max(1, Double(size.height) - c.top - c.bottom) * sy
+                    item.frame = f
+                }
+                scenes[s].items[i] = item
             }
         }
+        if scenes != project.scenes { project.scenes = scenes }
     }
+
+    /// Source size in pixels (live frame, or the last one seen).
+    func sourcePixelSize(_ id: UUID) -> CGSize? { sourceSize(id) ?? knownSizes[id] }
+
+    // MARK: - Fast dragging (only the video layer updates until the mouse is released)
+
+    func previewDrag(_ itemID: UUID, frame: CanvasRect, crop: Crop) {
+        dragOverride = (itemID, frame, crop)
+        updateLayers()
+    }
+
+    func endDrag() {
+        guard let drag = dragOverride else { return }
+        dragOverride = nil
+        updateItem(drag.item) { item in
+            item.frame = drag.frame
+            item.crop = drag.crop
+        }
+        updateLayers()
+    }
+
+    /// Crop that removes content instead of stretching: the frame shrinks/grows with the crop.
+    func setCrop(_ itemID: UUID, _ crop: Crop) {
+        guard let item = item(itemID) else { return }
+        guard let size = sourcePixelSize(item.sourceID) else {
+            updateItem(itemID) { $0.crop = crop }
+            return
+        }
+        updateItem(itemID) { $0 = Self.applyCrop($0, crop, size: size) }
+    }
+
+    static func applyCrop(_ item: SceneItem, _ crop: Crop, size: CGSize) -> SceneItem {
+        var result = item
+        let W = Double(size.width), H = Double(size.height)
+        var c = crop
+        c.left = max(0, min(c.left, W - 8))
+        c.right = max(0, min(c.right, W - 8 - c.left))
+        c.top = max(0, min(c.top, H - 8))
+        c.bottom = max(0, min(c.bottom, H - 8 - c.top))
+        result.crop = c
+        guard var f = item.frame else { return result }
+        let old = item.crop
+        let sx = f.w / max(1, W - old.left - old.right)
+        let sy = f.h / max(1, H - old.top - old.bottom)
+        f.x += (c.left - old.left) * sx
+        f.y += (c.top - old.top) * sy
+        f.w = (W - c.left - c.right) * sx
+        f.h = (H - c.top - c.bottom) * sy
+        result.frame = f
+        return result
+    }
+
 
     static func fit(_ size: CGSize, _ W: Double, _ H: Double, stretch: Bool, onlyIfLarger: Bool = false) -> CanvasRect {
         if stretch { return CanvasRect(x: 0, y: 0, w: W, h: H) }
@@ -472,7 +549,9 @@ final class Studio: ObservableObject {
 
     private func pruneUnusedSources() {
         let used = Set(project.scenes.flatMap { $0.items.map(\.sourceID) })
+        let removedAudio = Set(project.videoSources.filter { !used.contains($0.id) }.compactMap(\.audioSourceID))
         project.videoSources.removeAll { !used.contains($0.id) }
+        if !removedAudio.isEmpty { project.audioSources.removeAll { removedAudio.contains($0.id) } }
     }
 
     /// delta +1 = move up (towards the top of the stack).
@@ -517,6 +596,44 @@ final class Studio: ObservableObject {
     func updateVideoSource(_ id: UUID, _ change: (inout VideoSourceConfig) -> Void) {
         guard let i = project.videoSources.firstIndex(where: { $0.id == id }) else { return }
         change(&project.videoSources[i])
+        syncLinkedAudio(id)
+    }
+
+    /// Window capture "Capture audio": keeps a mixer channel for the window's app in step.
+    private func syncLinkedAudio(_ id: UUID) {
+        guard let i = project.videoSources.firstIndex(where: { $0.id == id }) else { return }
+        let config = project.videoSources[i]
+        var bundleID = ""
+        if case .window(_, let bid, _) = config.kind { bundleID = bid }
+        let linked = config.audioSourceID.flatMap { aid in project.audioSources.firstIndex { $0.id == aid } }
+        if config.captureAudio == true, !bundleID.isEmpty {
+            let appName = apps.first { $0.id == bundleID }?.title ?? config.name
+            let kind = AudioSourceKind.app(bundleID: bundleID, name: appName)
+            if let j = linked {
+                if project.audioSources[j].kind != kind { project.audioSources[j].kind = kind }
+            } else {
+                let audio = AudioSourceConfig(name: "\(config.name) Audio", kind: kind, tracks: [1, 2])
+                project.audioSources.append(audio)
+                project.videoSources[i].audioSourceID = audio.id
+            }
+        } else if let j = linked {
+            project.audioSources.remove(at: j)
+            project.videoSources[i].audioSourceID = nil
+        }
+    }
+
+    /// Moves a mixer channel to a new position.
+    func moveAudioSource(_ id: UUID, to index: Int) {
+        guard let from = project.audioSources.firstIndex(where: { $0.id == id }) else { return }
+        var list = project.audioSources
+        let source = list.remove(at: from)
+        list.insert(source, at: max(0, min(index, list.count)))
+        if list != project.audioSources { project.audioSources = list }
+    }
+
+    func moveAudioSource(_ id: UUID, by delta: Int) {
+        guard let from = project.audioSources.firstIndex(where: { $0.id == id }) else { return }
+        moveAudioSource(id, to: from + delta)
     }
 
     // MARK: - Audio editing
@@ -528,6 +645,11 @@ final class Studio: ObservableObject {
     func removeAudioSource(_ id: UUID) {
         project.audioSources.first { $0.id == id }?.filters.forEach { PluginWindows.close($0.id) }
         project.audioSources.removeAll { $0.id == id }
+        // Removing a window's linked audio channel switches its "Capture audio" off.
+        for i in project.videoSources.indices where project.videoSources[i].audioSourceID == id {
+            project.videoSources[i].audioSourceID = nil
+            project.videoSources[i].captureAudio = nil
+        }
     }
 
     func updateAudioSource(_ id: UUID, _ change: (inout AudioSourceConfig) -> Void) {

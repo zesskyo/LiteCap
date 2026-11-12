@@ -12,14 +12,17 @@ class VideoSource: NSObject, @unchecked Sendable {
     private var frameHolder: AnyObject?
     private var _status = ""
     let canvasFPS: Int
+    /// Captures are never made larger than this (the canvas), which saves a lot of GPU work.
+    let canvasSize: CGSize
 
     /// Called (any thread) once the source's pixel size is known or changes.
     var onSize: ((CGSize) -> Void)?
     private var lastSize: CGSize = .zero
 
-    init(config: VideoSourceConfig, fps: Int) {
+    init(config: VideoSourceConfig, fps: Int, canvas: CGSize) {
         self.config = config
         self.canvasFPS = fps
+        self.canvasSize = canvas
     }
 
     var id: UUID { config.id }
@@ -56,6 +59,7 @@ class VideoSource: NSObject, @unchecked Sendable {
     func apply(_ newConfig: VideoSourceConfig) {
         guard newConfig != config else { return }
         let kindChanged = newConfig.kind != config.kind || newConfig.showCursor != config.showCursor
+            || newConfig.hideSystemUI != config.hideSystemUI
         config = newConfig
         if kindChanged {
             stop()
@@ -63,12 +67,12 @@ class VideoSource: NSObject, @unchecked Sendable {
         }
     }
 
-    static func make(_ config: VideoSourceConfig, fps: Int) -> VideoSource {
+    static func make(_ config: VideoSourceConfig, fps: Int, canvas: CGSize) -> VideoSource {
         switch config.kind {
-        case .display, .window: return ScreenSource(config: config, fps: fps)
-        case .camera: return CameraSource(config: config, fps: fps)
-        case .image: return ImageSource(config: config, fps: fps)
-        case .browser: return BrowserSource(config: config, fps: fps)
+        case .display, .window: return ScreenSource(config: config, fps: fps, canvas: canvas)
+        case .camera: return CameraSource(config: config, fps: fps, canvas: canvas)
+        case .image: return ImageSource(config: config, fps: fps, canvas: canvas)
+        case .browser: return BrowserSource(config: config, fps: fps, canvas: canvas)
         }
     }
 }
@@ -121,7 +125,11 @@ final class ScreenSource: VideoSource, SCStreamOutput, SCStreamDelegate {
             let scale = CGFloat(filter.pointPixelScale)
             var width = filter.contentRect.width * scale
             var height = filter.contentRect.height * scale
-            if width > 3840 { height = height * 3840 / width; width = 3840 }
+            // Capture no bigger than the canvas needs: e.g. a 3024×1964 Retina screen on a
+            // 1080p canvas is captured at 1662×1080. ScreenCaptureKit scales in hardware.
+            let fit = min(1, canvasSize.width / max(1, width), canvasSize.height / max(1, height))
+            width *= fit
+            height *= fit
             let sc = SCStreamConfiguration()
             sc.width = max(2, Int(width) & ~1)
             sc.height = max(2, Int(height) & ~1)
@@ -162,6 +170,15 @@ final class ScreenSource: VideoSource, SCStreamOutput, SCStreamDelegate {
                 ?? content.displays.first { $0.displayID == CGMainDisplayID() }
                 ?? content.displays.first
             guard let display else { return nil }
+            if config.hideSystemUI == true {
+                // Leave out LiteCap's windows plus the Dock (window level 20), menu bar (24) and
+                // menu bar items (25). Excluding whole apps would also remove the wallpaper.
+                let hidden = content.windows.filter { window in
+                    window.owningApplication?.bundleIdentifier == Bundle.main.bundleIdentifier
+                        || [20, 24, 25].contains(window.windowLayer)
+                }
+                return SCContentFilter(display: display, excludingWindows: hidden)
+            }
             // Exclude LiteCap's own windows so the preview doesn't capture itself.
             return SCContentFilter(display: display, excludingApplications: me, exceptingWindows: [])
         case .window(let id, let bundleID, let title):

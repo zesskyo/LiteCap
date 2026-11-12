@@ -41,42 +41,44 @@ enum AudioPlugins {
 }
 
 /// Opens a plugin's own editor window (or a generic slider panel if it has none).
+///
+/// Each plugin's window is created once and kept: closing it only hides it. Many plugins
+/// (e.g. FabFilter) hand out their editor only once, so asking again would get no editor.
 @MainActor
 enum PluginWindows {
     private static var windows: [UUID: NSWindow] = [:]
-    private static var observers: [UUID: NSObjectProtocol] = [:]
+    private static var pending: Set<UUID> = []
 
     static func show(_ unit: AVAudioUnit, id: UUID, title: String) {
         if let window = windows[id] {
+            window.title = title
             window.makeKeyAndOrderFront(nil)
             return
         }
+        guard !pending.contains(id) else { return }
+        pending.insert(id)
         unit.auAudioUnit.requestViewController { @Sendable controller in
             Task { @MainActor in
+                pending.remove(id)
                 let content: NSViewController = controller
                     ?? NSHostingController(rootView: GenericPluginView(unit: unit.auAudioUnit))
                 let window = NSWindow(contentViewController: content)
                 window.title = title
                 window.styleMask.insert([.titled, .closable])
-                window.isReleasedWhenClosed = false
+                window.isReleasedWhenClosed = false // closing just hides it; we reuse it next time
                 let preferred = content.preferredContentSize
                 if preferred.width > 50 && preferred.height > 50 { window.setContentSize(preferred) }
                 window.center()
                 window.makeKeyAndOrderFront(nil)
                 windows[id] = window
-                observers[id] = NotificationCenter.default.addObserver(
-                    forName: NSWindow.willCloseNotification, object: window, queue: .main
-                ) { _ in
-                    MainActor.assumeIsolated {
-                        windows[id] = nil
-                        if let o = observers.removeValue(forKey: id) { NotificationCenter.default.removeObserver(o) }
-                    }
-                }
             }
         }
     }
 
-    static func close(_ id: UUID) { windows[id]?.close() }
+    /// Really closes and forgets a plugin's window (when the filter or its source is removed).
+    static func close(_ id: UUID) {
+        windows.removeValue(forKey: id)?.close()
+    }
 }
 
 /// Fallback editor: one slider per parameter.
@@ -86,7 +88,7 @@ struct GenericPluginView: View {
     var body: some View {
         let parameters = unit.parameterTree?.allParameters ?? []
         ScrollView {
-            VStack(alignment: .leading, spacing: 10) {
+            LazyVStack(alignment: .leading, spacing: 10) {
                 if parameters.isEmpty {
                     Text("This plugin has no adjustable parameters.").foregroundStyle(.secondary)
                 }

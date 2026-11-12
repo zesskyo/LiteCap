@@ -56,6 +56,13 @@ struct VideoSourceConfig: Codable, Identifiable, Equatable {
     var name: String
     var kind: VideoSourceKind
     var showCursor = true
+    // Optional so projects saved by older versions still load.
+    /// Window capture: also add the window's app audio to the mixer.
+    var captureAudio: Bool?
+    /// The mixer channel created for `captureAudio`.
+    var audioSourceID: UUID?
+    /// Display capture: leave out the Dock and the menu bar.
+    var hideSystemUI: Bool?
 }
 
 struct SceneItem: Codable, Identifiable, Equatable {

@@ -69,18 +69,38 @@ private struct PreviewPanel: View {
     }
 }
 
-/// Click to select, drag to move, drag a corner to resize (⇧ = free aspect).
-/// Edges and centers snap to the canvas and to other sources.
+/// Click to select, drag to move, drag a handle to resize.
+///   ⇧ while dragging a handle = crop that side instead (content isn't stretched).
+///   ⌥ on a corner = free aspect ratio.  ⌘ = no snapping.
+/// While dragging only the video layer updates; the project is written once on release.
 private struct EditOverlay: View {
     @EnvironmentObject var studio: Studio
     @State private var mode: DragMode = .inactive
     @State private var guides: [Guide] = []
+    /// The selected item's frame while a drag is in progress.
+    @State private var liveFrame: CanvasRect?
 
     private enum DragMode {
         case inactive
         case idle
-        case move(UUID, CanvasRect)
-        case resize(UUID, CanvasRect, corner: Int)
+        case move(UUID, CanvasRect, Crop)
+        case resize(UUID, CanvasRect, Crop, handle: Handle)
+        case crop(UUID, CanvasRect, Crop, handle: Handle, source: CGSize)
+    }
+
+    /// Corners and edge midpoints.
+    private enum Handle: CaseIterable {
+        case topLeft, top, topRight, right, bottomRight, bottom, bottomLeft, left
+        var movesLeft: Bool { [.topLeft, .left, .bottomLeft].contains(self) }
+        var movesRight: Bool { [.topRight, .right, .bottomRight].contains(self) }
+        var movesTop: Bool { [.topLeft, .top, .topRight].contains(self) }
+        var movesBottom: Bool { [.bottomLeft, .bottom, .bottomRight].contains(self) }
+        var isCorner: Bool { (movesLeft || movesRight) && (movesTop || movesBottom) }
+
+        func point(in r: CGRect) -> CGPoint {
+            CGPoint(x: movesLeft ? r.minX : (movesRight ? r.maxX : r.midX),
+                    y: movesTop ? r.minY : (movesBottom ? r.maxY : r.midY))
+        }
     }
 
     private struct Guide: Hashable {
@@ -102,16 +122,16 @@ private struct EditOverlay: View {
                             .offset(y: CGFloat(guide.position) * scale)
                     }
                 }
-                if let item = studio.item(studio.selectedItemID), let f = item.frame, item.visible {
+                if let item = studio.item(studio.selectedItemID), let f = liveFrame ?? item.frame, item.visible {
                     let rect = CGRect(x: f.x * scale, y: f.y * scale, width: f.w * scale, height: f.h * scale)
                     Rectangle()
                         .stroke(item.locked ? Color.orange : Color.red, lineWidth: 1.5)
                         .frame(width: max(1, rect.width), height: max(1, rect.height))
                         .offset(x: rect.minX, y: rect.minY)
                     if !item.locked {
-                        ForEach(0..<4, id: \.self) { corner in
-                            let p = Self.corner(rect, corner)
-                            Rectangle().fill(Color.red).frame(width: 9, height: 9).offset(x: p.x - 4.5, y: p.y - 4.5)
+                        ForEach(Handle.allCases, id: \.self) { handle in
+                            let p = handle.point(in: rect)
+                            Rectangle().fill(Color.red).frame(width: 8, height: 8).offset(x: p.x - 4, y: p.y - 4)
                         }
                     }
                 }
@@ -119,17 +139,10 @@ private struct EditOverlay: View {
             .gesture(
                 DragGesture(minimumDistance: 0)
                     .onChanged { value in drag(value, scale: scale) }
-                    .onEnded { _ in
-                        mode = .inactive
-                        guides = []
-                    }
+                    .onEnded { _ in finish() }
             )
             .contextMenu { ItemMenu(itemID: studio.selectedItemID) }
         }
-    }
-
-    private static func corner(_ r: CGRect, _ i: Int) -> CGPoint {
-        CGPoint(x: i % 2 == 0 ? r.minX : r.maxX, y: i < 2 ? r.minY : r.maxY)
     }
 
     /// Snap lines: canvas edges and center, plus every other visible source's edges and center.
@@ -156,18 +169,31 @@ private struct EditOverlay: View {
         return best
     }
 
+    private func finish() {
+        if liveFrame != nil { studio.endDrag() }
+        liveFrame = nil
+        mode = .inactive
+        guides = []
+    }
+
+    private func show(_ id: UUID, _ frame: CanvasRect, _ crop: Crop) {
+        liveFrame = frame
+        studio.previewDrag(id, frame: frame, crop: crop)
+    }
+
     private func drag(_ value: DragGesture.Value, scale: CGFloat) {
         if case .inactive = mode { begin(value, scale: scale) }
         let dx = Double(value.translation.width / scale), dy = Double(value.translation.height / scale)
         let threshold = 8 / Double(scale) // 8 screen points, whatever the preview size
-        let noSnap = NSEvent.modifierFlags.contains(.command) // hold ⌘ to place freely
+        let flags = NSEvent.modifierFlags
+        let snapping = !flags.contains(.command)
+        var newGuides: [Guide] = []
         switch mode {
-        case .move(let id, let start):
+        case .move(let id, let start, let crop):
             var f = start
             f.x += dx
             f.y += dy
-            var newGuides: [Guide] = []
-            if !noSnap {
+            if snapping {
                 let t = targets(excluding: id)
                 if let s = Self.snap([f.x, f.x + f.w / 2, f.x + f.w], to: t.x, threshold: threshold) {
                     f.x += s.delta
@@ -178,46 +204,65 @@ private struct EditOverlay: View {
                     newGuides.append(Guide(vertical: false, position: s.line))
                 }
             }
-            guides = newGuides
-            studio.updateItem(id) { $0.frame = f }
-        case .resize(let id, let start, let corner):
-            let free = NSEvent.modifierFlags.contains(.shift)
-            let left = corner % 2 == 0, top = corner < 2
-            let anchorX = left ? start.x + start.w : start.x
-            let anchorY = top ? start.y + start.h : start.y
-            var w = max(16, left ? start.w - dx : start.w + dx)
-            var h = max(16, top ? start.h - dy : start.h + dy)
-            let aspect = start.w / max(1, start.h)
-            let widthLeads = abs(dx) * start.h >= abs(dy) * start.w
-            if !free { if widthLeads { h = w / aspect } else { w = h * aspect } }
-            var newGuides: [Guide] = []
-            if !noSnap {
+            show(id, f, crop)
+
+        case .resize(let id, let start, let crop, let handle):
+            var left = start.x, right = start.x + start.w, top = start.y, bottom = start.y + start.h
+            if handle.movesLeft { left = min(right - 16, left + dx) }
+            if handle.movesRight { right = max(left + 16, right + dx) }
+            if handle.movesTop { top = min(bottom - 16, top + dy) }
+            if handle.movesBottom { bottom = max(top + 16, bottom + dy) }
+            if snapping {
                 let t = targets(excluding: id)
-                // Snap the moving edge along whichever axis leads, then keep the aspect ratio.
-                if free || widthLeads {
-                    let edge = left ? anchorX - w : anchorX + w
-                    if let s = Self.snap([edge], to: t.x, threshold: threshold) {
-                        w = max(16, w + (left ? -s.delta : s.delta))
-                        if !free { h = w / aspect }
-                        newGuides.append(Guide(vertical: true, position: s.line))
-                    }
-                }
-                if free || !widthLeads {
-                    let edge = top ? anchorY - h : anchorY + h
-                    if let s = Self.snap([edge], to: t.y, threshold: threshold) {
-                        h = max(16, h + (top ? -s.delta : s.delta))
-                        if !free { w = h * aspect }
-                        newGuides.append(Guide(vertical: false, position: s.line))
-                    }
+                if handle.movesLeft, let s = Self.snap([left], to: t.x, threshold: threshold) { left += s.delta; newGuides.append(Guide(vertical: true, position: s.line)) }
+                if handle.movesRight, let s = Self.snap([right], to: t.x, threshold: threshold) { right += s.delta; newGuides.append(Guide(vertical: true, position: s.line)) }
+                if handle.movesTop, let s = Self.snap([top], to: t.y, threshold: threshold) { top += s.delta; newGuides.append(Guide(vertical: false, position: s.line)) }
+                if handle.movesBottom, let s = Self.snap([bottom], to: t.y, threshold: threshold) { bottom += s.delta; newGuides.append(Guide(vertical: false, position: s.line)) }
+            }
+            // Corners keep the aspect ratio (unless ⌥): follow the axis that moved most.
+            if handle.isCorner && !flags.contains(.option) {
+                let aspect = start.w / max(1, start.h)
+                let w = right - left, h = bottom - top
+                if abs(w - start.w) / start.w >= abs(h - start.h) / start.h {
+                    let newH = w / aspect
+                    if handle.movesTop { top = bottom - newH } else { bottom = top + newH }
+                } else {
+                    let newW = h * aspect
+                    if handle.movesLeft { left = right - newW } else { right = left + newW }
                 }
             }
-            guides = newGuides
-            let x = left ? anchorX - w : anchorX
-            let y = top ? anchorY - h : anchorY
-            studio.updateItem(id) { $0.frame = CanvasRect(x: x, y: y, w: w, h: h) }
+            show(id, CanvasRect(x: left, y: top, w: max(16, right - left), h: max(16, bottom - top)), crop)
+
+        case .crop(let id, let start, let startCrop, let handle, let size):
+            // Canvas pixels per source pixel; the frame edge follows the mouse, the rest stays put.
+            let sx = start.w / max(1, Double(size.width) - startCrop.left - startCrop.right)
+            let sy = start.h / max(1, Double(size.height) - startCrop.top - startCrop.bottom)
+            var edgeX = handle.movesLeft ? start.x + dx : start.x + start.w + dx
+            var edgeY = handle.movesTop ? start.y + dy : start.y + start.h + dy
+            if snapping {
+                let t = targets(excluding: id)
+                if handle.movesLeft || handle.movesRight, let s = Self.snap([edgeX], to: t.x, threshold: threshold) {
+                    edgeX += s.delta
+                    newGuides.append(Guide(vertical: true, position: s.line))
+                }
+                if handle.movesTop || handle.movesBottom, let s = Self.snap([edgeY], to: t.y, threshold: threshold) {
+                    edgeY += s.delta
+                    newGuides.append(Guide(vertical: false, position: s.line))
+                }
+            }
+            var crop = startCrop
+            if handle.movesLeft { crop.left = startCrop.left + (edgeX - start.x) / sx }
+            if handle.movesRight { crop.right = startCrop.right - (edgeX - (start.x + start.w)) / sx }
+            if handle.movesTop { crop.top = startCrop.top + (edgeY - start.y) / sy }
+            if handle.movesBottom { crop.bottom = startCrop.bottom - (edgeY - (start.y + start.h)) / sy }
+            var item = SceneItem(sourceID: id, frame: start, crop: startCrop)
+            item = Studio.applyCrop(item, crop, size: size)
+            if let f = item.frame { show(id, f, item.crop) }
+
         default:
             break
         }
+        guides = newGuides
     }
 
     private func begin(_ value: DragGesture.Value, scale: CGFloat) {
@@ -225,12 +270,15 @@ private struct EditOverlay: View {
         let p = value.startLocation
         if let item = studio.item(studio.selectedItemID), let f = item.frame, !item.locked, item.visible {
             let rect = CGRect(x: f.x * scale, y: f.y * scale, width: f.w * scale, height: f.h * scale)
-            for corner in 0..<4 {
-                let c = Self.corner(rect, corner)
-                if abs(c.x - p.x) <= 9 && abs(c.y - p.y) <= 9 {
-                    mode = .resize(item.id, f, corner: corner)
-                    return
+            for handle in Handle.allCases {
+                let c = handle.point(in: rect)
+                guard abs(c.x - p.x) <= 8 && abs(c.y - p.y) <= 8 else { continue }
+                if NSEvent.modifierFlags.contains(.shift), let size = studio.sourcePixelSize(item.sourceID) {
+                    mode = .crop(item.id, f, item.crop, handle: handle, source: size)
+                } else {
+                    mode = .resize(item.id, f, item.crop, handle: handle)
                 }
+                return
             }
         }
         let cx = Double(p.x / scale), cy = Double(p.y / scale)
@@ -238,7 +286,7 @@ private struct EditOverlay: View {
             item.visible && (item.frame?.contains(cx, cy) ?? false)
         }
         studio.selectedItemID = hit?.id
-        if let hit, !hit.locked, let f = hit.frame { mode = .move(hit.id, f) }
+        if let hit, !hit.locked, let f = hit.frame { mode = .move(hit.id, f, hit.crop) }
     }
 }
 

@@ -17,12 +17,13 @@ final class Compositor: @unchecked Sendable {
         var rect: SIMD4<Float>  // x0, y0, x1, y1 in clip space
         var uv: SIMD4<Float>    // u0, v0, u1, v1
         var opacity: Float = 1
+        var tint = SIMD4<Float>(1, 1, 1, 1)
     }
 
     static let shaderSource = """
     #include <metal_stdlib>
     using namespace metal;
-    struct Quad { float4 rect; float4 uv; float opacity; };
+    struct Quad { float4 rect; float4 uv; float opacity; float4 tint; };
     struct VOut { float4 pos [[position]]; float2 uv; };
     vertex VOut litecap_vertex(uint vid [[vertex_id]], constant Quad& q [[buffer(0)]]) {
         float2 c = float2(float(vid & 1), float(vid >> 1));
@@ -33,13 +34,15 @@ final class Compositor: @unchecked Sendable {
     }
     fragment float4 litecap_fragment(VOut in [[stage_in]], texture2d<float> tex [[texture(0)]],
                                      sampler s [[sampler(0)]], constant Quad& q [[buffer(0)]]) {
-        return tex.sample(s, in.uv) * q.opacity;
+        return tex.sample(s, in.uv) * q.tint * q.opacity;
     }
     """
 
     let device: MTLDevice
     let pipeline: MTLRenderPipelineState
     let sampler: MTLSamplerState
+    /// 1×1 white texture, tinted to draw solid rectangles (selection box, guides).
+    let whiteTexture: MTLTexture
     private let commandQueue: MTLCommandQueue
     private var textureCache: CVMetalTextureCache?
     private let renderQueue = DispatchQueue(label: "litecap.compositor", qos: .userInteractive)
@@ -92,6 +95,11 @@ final class Compositor: @unchecked Sendable {
         guard let sampler = device.makeSamplerState(descriptor: samplerDescriptor) else { return nil }
         self.sampler = sampler
         CVMetalTextureCacheCreate(nil, nil, device, nil, &textureCache)
+        let white = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm, width: 1, height: 1, mipmapped: false)
+        guard let whiteTexture = device.makeTexture(descriptor: white) else { return nil }
+        var pixel: [UInt8] = [255, 255, 255, 255]
+        whiteTexture.replace(region: MTLRegionMake2D(0, 0, 1, 1), mipmapLevel: 0, withBytes: &pixel, bytesPerRow: 4)
+        self.whiteTexture = whiteTexture
         configure(width: 1920, height: 1080, fps: 60)
     }
 
@@ -114,6 +122,17 @@ final class Compositor: @unchecked Sendable {
     func setFrameHandler(_ handler: ((CVPixelBuffer, CMTime) -> Void)?) { lock.withLock { frameHandler = handler } }
 
     func latestOutput() -> CVPixelBuffer? { lock.withLock { latest } }
+
+    /// What the preview draws on top of the picture: the selected item's box and snap guides.
+    struct PreviewOverlay {
+        var rect: CanvasRect?
+        var locked = false
+        var guides: [(vertical: Bool, position: Double)] = []
+    }
+
+    private var overlay = PreviewOverlay()
+    func setOverlay(_ newOverlay: PreviewOverlay) { lock.withLock { overlay = newOverlay } }
+    func currentOverlay() -> PreviewOverlay { lock.withLock { overlay } }
 
     func start() {
         guard !isRunning else { return }
@@ -244,6 +263,49 @@ struct PreviewSurface: NSViewRepresentable {
 
         func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {}
 
+        /// Selection box, handles and snap guides, drawn in the same pass as the picture so they
+        /// move in lockstep with it.
+        private func drawOverlay(_ encoder: MTLRenderCommandEncoder, view: MTKView, sx: Double, sy: Double) {
+            let overlay = compositor.currentOverlay()
+            guard overlay.rect != nil || !overlay.guides.isEmpty else { return }
+            let W = Double(compositor.width), H = Double(compositor.height)
+            let px = 2 / Double(max(1, view.drawableSize.width)), py = 2 / Double(max(1, view.drawableSize.height))
+            func nx(_ x: Double) -> Double { -sx + x / W * 2 * sx }
+            func ny(_ y: Double) -> Double { sy - y / H * 2 * sy }
+            encoder.setFragmentTexture(compositor.whiteTexture, index: 0)
+            func box(_ x0: Double, _ y0: Double, _ x1: Double, _ y1: Double, _ color: SIMD4<Float>) {
+                var quad = Compositor.Quad(rect: SIMD4(Float(x0), Float(y0), Float(x1), Float(y1)),
+                                           uv: SIMD4(0, 0, 1, 1), tint: color)
+                encoder.setVertexBytes(&quad, length: MemoryLayout<Compositor.Quad>.stride, index: 0)
+                encoder.setFragmentBytes(&quad, length: MemoryLayout<Compositor.Quad>.stride, index: 0)
+                encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
+            }
+            let cyan = SIMD4<Float>(0.2, 0.85, 1, 1)
+            for guide in overlay.guides {
+                if guide.vertical {
+                    let x = nx(guide.position)
+                    box(x - px, sy, x + px, -sy, cyan)
+                } else {
+                    let y = ny(guide.position)
+                    box(-sx, y + py, sx, y - py, cyan)
+                }
+            }
+            guard let r = overlay.rect else { return }
+            let color: SIMD4<Float> = overlay.locked ? SIMD4(1, 0.6, 0.1, 1) : SIMD4(0.95, 0.2, 0.2, 1)
+            let l = nx(r.x), rt = nx(r.x + r.w), t = ny(r.y), b = ny(r.y + r.h)
+            let tx = 3 * px, ty = 3 * py
+            box(l, t, rt, t - ty, color)
+            box(l, b + ty, rt, b, color)
+            box(l, t, l + tx, b, color)
+            box(rt - tx, t, rt, b, color)
+            guard !overlay.locked else { return }
+            let hx = 6 * px, hy = 6 * py
+            let midX = (l + rt) / 2, midY = (t + b) / 2
+            for (x, y) in [(l, t), (midX, t), (rt, t), (rt, midY), (rt, b), (midX, b), (l, b), (l, midY)] {
+                box(x - hx, y + hy, x + hx, y - hy, color)
+            }
+        }
+
         func draw(in view: MTKView) {
             guard let pass = view.currentRenderPassDescriptor, let drawable = view.currentDrawable,
                   let commands = queue?.makeCommandBuffer(),
@@ -262,6 +324,7 @@ struct PreviewSurface: NSViewRepresentable {
                 encoder.setFragmentBytes(&quad, length: MemoryLayout<Compositor.Quad>.stride, index: 0)
                 encoder.setFragmentTexture(texture, index: 0)
                 encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
+                drawOverlay(encoder, view: view, sx: sx, sy: sy)
             }
             encoder.endEncoding()
             commands.present(drawable)

@@ -68,3 +68,5 @@ struct FlatRow<Content: View>: View {
 
 /// Whole numbers without thousands separators: 20000, not 20,000.
 let plainNumber = IntegerFormatStyle<Int>().grouping(.never)
+/// Whole-pixel decimals without separators: 1480, not 1,480.
+let plainDecimal = FloatingPointFormatStyle<Double>().grouping(.never).precision(.fractionLength(0))

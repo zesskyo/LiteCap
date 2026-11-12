@@ -224,8 +224,8 @@ final class AudioEngine: @unchecked Sendable {
 
     private func makeCapture(_ kind: AudioSourceKind, ring: AudioRing) -> AudioCapture {
         switch kind {
-        case .desktop: return SystemAudioCapture(appBundleID: nil, ring: ring)
-        case .app(let bundleID, _): return SystemAudioCapture(appBundleID: bundleID, ring: ring)
+        case .desktop: return SystemAudioCapture(app: nil, ring: ring)
+        case .app(let bundleID, let name): return SystemAudioCapture(app: (bundleID, name), ring: ring)
         case .input(let deviceID): return InputDeviceCapture(deviceID: deviceID, ring: ring)
         }
     }

@@ -157,8 +157,9 @@ final class InputDeviceCapture: NSObject, AudioCapture, AVCaptureAudioDataOutput
 // MARK: - Desktop audio / one app's audio (ScreenCaptureKit)
 
 final class SystemAudioCapture: NSObject, AudioCapture, SCStreamOutput, SCStreamDelegate, @unchecked Sendable {
-    /// nil = all desktop audio (minus LiteCap); otherwise only this app.
-    private let appBundleID: String?
+    /// nil = all desktop audio (minus LiteCap); otherwise only this app
+    /// (matched by bundle ID, or by name for apps without one, like Java games).
+    private let app: (bundleID: String, name: String)?
     private let ring: AudioRing
     private let queue = DispatchQueue(label: "litecap.audio.system", qos: .userInteractive)
     private let converter = PCMConverter()
@@ -166,8 +167,8 @@ final class SystemAudioCapture: NSObject, AudioCapture, SCStreamOutput, SCStream
     private var running = false
     private(set) var status = ""
 
-    init(appBundleID: String?, ring: AudioRing) {
-        self.appBundleID = appBundleID
+    init(app: (bundleID: String, name: String)?, ring: AudioRing) {
+        self.app = app
         self.ring = ring
     }
 
@@ -188,8 +189,12 @@ final class SystemAudioCapture: NSObject, AudioCapture, SCStreamOutput, SCStream
             let content = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: false)
             guard let display = content.displays.first else { status = "No display"; return }
             let filter: SCContentFilter
-            if let appBundleID {
-                guard let app = content.applications.first(where: { $0.bundleIdentifier == appBundleID }) else {
+            if let wanted = app {
+                guard let app = content.applications.first(where: { candidate in
+                    wanted.bundleID.isEmpty
+                        ? candidate.bundleIdentifier.isEmpty && candidate.applicationName == wanted.name
+                        : candidate.bundleIdentifier == wanted.bundleID
+                }) else {
                     status = "App isn't running"
                     // Try again in a bit — the app may be launched later.
                     try? await Task.sleep(nanoseconds: 5_000_000_000)

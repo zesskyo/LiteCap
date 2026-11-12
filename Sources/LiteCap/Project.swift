@@ -63,6 +63,8 @@ struct VideoSourceConfig: Codable, Identifiable, Equatable {
     var audioSourceID: UUID?
     /// Display capture: leave out the Dock and the menu bar.
     var hideSystemUI: Bool?
+    /// Window capture: the owning app's name (used when the app has no bundle ID, e.g. Java apps).
+    var appName: String?
 }
 
 struct SceneItem: Codable, Identifiable, Equatable {

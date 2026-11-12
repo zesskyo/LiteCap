@@ -44,6 +44,28 @@ struct LiteCapApp: App {
                 }
                 CommandGroup(after: .appInfo) { CheckForUpdatesButton(updater: delegate.updater) }
                 CommandGroup(replacing: .newItem) {}
+                // ⌘Z / ⇧⌘Z: undo scene and source edits (text fields keep their own text undo).
+                CommandGroup(replacing: .undoRedo) {
+                    Button("Undo") { UndoRouter.undo(delegate.studio) }.keyboardShortcut("z", modifiers: .command)
+                    Button("Redo") { UndoRouter.redo(delegate.studio) }.keyboardShortcut("z", modifiers: [.command, .shift])
+                }
             }
+    }
+}
+
+/// Sends ⌘Z to the text field being edited, if any; otherwise to LiteCap's own undo.
+@MainActor
+enum UndoRouter {
+    private static var textUndo: UndoManager? {
+        guard let responder = NSApp.keyWindow?.firstResponder as? NSText else { return nil }
+        return responder.undoManager
+    }
+
+    static func undo(_ studio: Studio) {
+        if let manager = textUndo, manager.canUndo { manager.undo() } else { studio.undo() }
+    }
+
+    static func redo(_ studio: Studio) {
+        if let manager = textUndo, manager.canRedo { manager.redo() } else { studio.redo() }
     }
 }

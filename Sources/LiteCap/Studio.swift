@@ -13,6 +13,7 @@ struct WindowItem: Identifiable, Hashable {
     let title: String
     let bundleID: String
     let windowTitle: String
+    let appName: String
 }
 
 /// Audio meter values, kept apart from `Studio` so 20 Hz updates only redraw the meters.
@@ -69,7 +70,9 @@ final class Studio: ObservableObject {
             projectChanged(from: oldValue)
         }
     }
-    @Published var selectedItemID: UUID?
+    @Published var selectedItemID: UUID? {
+        didSet { updateOverlay() }
+    }
     @Published var editingSourceID: UUID?
     @Published var filtersSourceID: UUID?
     @Published var showingTracks = false
@@ -102,6 +105,14 @@ final class Studio: ObservableObject {
     private var sceneSwitch: Task<Void, Never>?
     private var knownSizes: [UUID: CGSize] = [:]
     private var dragOverride: (item: UUID, frame: CanvasRect, crop: Crop)?
+    private var dragGuides: [(vertical: Bool, position: Double)] = []
+
+    // Undo / redo of project edits (⌘Z / ⇧⌘Z).
+    private var undoStack: [Project] = []
+    private var redoStack: [Project] = []
+    private var lastUndoRecord = Date.distantPast
+    private var isRestoring = false
+    private var undoSuppressed = 0
     private var recording: Recorder?
     private var stream: StreamOutput?
     private var previewClients = 0
@@ -249,6 +260,7 @@ final class Studio: ObservableObject {
     // MARK: - Project changes
 
     private func projectChanged(from old: Project) {
+        if !isRestoring && undoSuppressed == 0 { recordUndo(old) }
         // Keep typed-in values sane (encoders need even sizes) — written back once, only if needed.
         var fixed = project
         fixed.video.width = max(16, min(7680, fixed.video.width)) & ~1
@@ -276,6 +288,42 @@ final class Studio: ObservableObject {
             }
         }
         syncVideo()
+    }
+
+    // MARK: - Undo / redo
+
+    var canUndo: Bool { !undoStack.isEmpty }
+    var canRedo: Bool { !redoStack.isEmpty }
+
+    /// Changes less than ~0.6 s apart (a fader move, typing) become one undo step.
+    private func recordUndo(_ old: Project) {
+        let now = Date()
+        if undoStack.isEmpty || now.timeIntervalSince(lastUndoRecord) > 0.6 {
+            undoStack.append(old)
+            if undoStack.count > 100 { undoStack.removeFirst() }
+        }
+        lastUndoRecord = now
+        redoStack.removeAll()
+    }
+
+    func undo() {
+        guard let previous = undoStack.popLast() else { return }
+        redoStack.append(project)
+        restore(previous)
+    }
+
+    func redo() {
+        guard let next = redoStack.popLast() else { return }
+        undoStack.append(project)
+        restore(next)
+    }
+
+    private func restore(_ state: Project) {
+        isRestoring = true
+        project = state
+        isRestoring = false
+        lastUndoRecord = .distantPast
+        if item(selectedItemID) == nil { selectedItemID = nil }
     }
 
     private func scheduleSave() {
@@ -381,12 +429,31 @@ final class Studio: ObservableObject {
             return Compositor.Layer(source: source, frame: frame, crop: crop)
         }
         compositor.setLayers(layers)
+        updateOverlay()
+    }
+
+    /// The selection box and snap guides the preview draws (in Metal, in step with the picture).
+    private func updateOverlay() {
+        var overlay = Compositor.PreviewOverlay()
+        if let item = item(selectedItemID), item.visible {
+            overlay.rect = dragOverride?.item == item.id ? dragOverride?.frame : item.frame
+            overlay.locked = item.locked
+        }
+        overlay.guides = dragGuides
+        compositor.setOverlay(overlay)
+    }
+
+    func setGuides(_ guides: [(vertical: Bool, position: Double)]) {
+        dragGuides = guides
+        updateOverlay()
     }
 
     /// A source's pixel size became known or changed (e.g. a captured window was resized).
     /// New items get placed; existing ones keep their scale, so the box grows/shrinks
     /// with the source instead of stretching it.
     private func sourceSized(_ id: UUID, _ size: CGSize) {
+        undoSuppressed += 1
+        defer { undoSuppressed -= 1 }
         let previous = knownSizes[id]
         knownSizes[id] = size
         let canvasW = Double(project.video.width), canvasH = Double(project.video.height)
@@ -424,7 +491,11 @@ final class Studio: ObservableObject {
     }
 
     func endDrag() {
-        guard let drag = dragOverride else { return }
+        dragGuides = []
+        guard let drag = dragOverride else {
+            updateOverlay()
+            return
+        }
         dragOverride = nil
         updateItem(drag.item) { item in
             item.frame = drag.frame
@@ -605,10 +676,14 @@ final class Studio: ObservableObject {
         let config = project.videoSources[i]
         var bundleID = ""
         if case .window(_, let bid, _) = config.kind { bundleID = bid }
+        // Java apps (Minecraft, …) have no bundle ID: match those by app name.
+        let appName = config.appName ?? apps.first { $0.id == bundleID }?.title ?? ""
         let linked = config.audioSourceID.flatMap { aid in project.audioSources.firstIndex { $0.id == aid } }
-        if config.captureAudio == true, !bundleID.isEmpty {
-            let appName = apps.first { $0.id == bundleID }?.title ?? config.name
-            let kind = AudioSourceKind.app(bundleID: bundleID, name: appName)
+        if config.captureAudio == true && bundleID.isEmpty && appName.isEmpty {
+            message = "Couldn't tell which app owns that window. Pick the window again in Properties."
+        }
+        if config.captureAudio == true, !bundleID.isEmpty || !appName.isEmpty {
+            let kind = AudioSourceKind.app(bundleID: bundleID, name: appName.isEmpty ? config.name : appName)
             if let j = linked {
                 if project.audioSources[j].kind != kind { project.audioSources[j].kind = kind }
             } else {
@@ -714,12 +789,20 @@ final class Studio: ObservableObject {
                     WindowItem(id: w.windowID,
                                title: "\(w.owningApplication?.applicationName ?? "App") — \((w.title ?? "").prefix(60))",
                                bundleID: w.owningApplication?.bundleIdentifier ?? "",
-                               windowTitle: w.title ?? "")
+                               windowTitle: w.title ?? "",
+                               appName: w.owningApplication?.applicationName ?? "")
                 }
                 .sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+            // Apps without a bundle ID (Java games, …) are listed by name: id "name:<app name>".
             apps = content.applications
-                .filter { !$0.applicationName.isEmpty && $0.bundleIdentifier != me && !$0.bundleIdentifier.isEmpty }
-                .map { PickerItem(id: $0.bundleIdentifier, title: $0.applicationName) }
+                .filter { !$0.applicationName.isEmpty && ($0.bundleIdentifier.isEmpty || $0.bundleIdentifier != me) }
+                .map { app in
+                    PickerItem(id: app.bundleIdentifier.isEmpty ? "name:" + app.applicationName : app.bundleIdentifier,
+                               title: app.applicationName)
+                }
+                .reduce(into: [PickerItem]()) { list, item in
+                    if !list.contains(where: { $0.id == item.id }) { list.append(item) }
+                }
                 .sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
         } else {
             message = "LiteCap needs Screen Recording permission: System Settings → Privacy & Security → "

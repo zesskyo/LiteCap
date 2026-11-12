@@ -94,9 +94,6 @@ private struct PreviewPanel: View {
 private struct EditOverlay: View {
     @EnvironmentObject var studio: Studio
     @State private var mode: DragMode = .inactive
-    @State private var guides: [Guide] = []
-    /// The selected item's frame while a drag is in progress.
-    @State private var liveFrame: CanvasRect?
 
     private enum DragMode {
         case inactive
@@ -127,50 +124,29 @@ private struct EditOverlay: View {
     }
 
     var body: some View {
+        // The box, handles and guides are drawn by the Metal preview (in step with the video);
+        // this layer only handles the mouse.
         GeometryReader { geo in
             let scale = geo.size.width / CGFloat(max(1, studio.project.video.width))
-            ZStack(alignment: .topLeading) {
-                Color.clear.contentShape(Rectangle())
-                ForEach(guides, id: \.self) { guide in
-                    if guide.vertical {
-                        Rectangle().fill(Color.cyan).frame(width: 1, height: geo.size.height)
-                            .offset(x: CGFloat(guide.position) * scale)
-                    } else {
-                        Rectangle().fill(Color.cyan).frame(width: geo.size.width, height: 1)
-                            .offset(y: CGFloat(guide.position) * scale)
-                    }
-                }
-                if let item = studio.item(studio.selectedItemID), let f = liveFrame ?? item.frame, item.visible {
-                    let rect = CGRect(x: f.x * scale, y: f.y * scale, width: f.w * scale, height: f.h * scale)
-                    Rectangle()
-                        .stroke(item.locked ? Color.orange : Color.red, lineWidth: 1.5)
-                        .frame(width: max(1, rect.width), height: max(1, rect.height))
-                        .offset(x: rect.minX, y: rect.minY)
-                    if !item.locked {
-                        ForEach(Handle.allCases, id: \.self) { handle in
-                            let p = handle.point(in: rect)
-                            Rectangle().fill(Color.red).frame(width: 8, height: 8).offset(x: p.x - 4, y: p.y - 4)
-                        }
-                    }
-                }
-            }
-            .gesture(
-                DragGesture(minimumDistance: 0)
-                    .onChanged { value in drag(value, scale: scale) }
-                    .onEnded { _ in finish() }
-            )
-            .contextMenu { ItemMenu(itemID: studio.selectedItemID) }
+            Color.clear
+                .contentShape(Rectangle())
+                .gesture(
+                    DragGesture(minimumDistance: 0)
+                        .onChanged { value in drag(value, scale: scale) }
+                        .onEnded { _ in finish() }
+                )
+                .contextMenu { ItemMenu(itemID: studio.selectedItemID) }
         }
     }
 
-    /// Snap lines: canvas edges and center, plus every other visible source's edges and center.
+    /// Snap lines: canvas edges and center, plus the edges of other visible sources.
     private func targets(excluding id: UUID) -> (x: [Double], y: [Double]) {
         let W = Double(studio.project.video.width), H = Double(studio.project.video.height)
         var xs = [0, W / 2, W], ys = [0, H / 2, H]
         for item in studio.project.currentScene?.items ?? [] where item.id != id && item.visible {
             guard let f = item.frame else { continue }
-            xs += [f.x, f.x + f.w / 2, f.x + f.w]
-            ys += [f.y, f.y + f.h / 2, f.y + f.h]
+            xs += [f.x, f.x + f.w]
+            ys += [f.y, f.y + f.h]
         }
         return (xs, ys)
     }
@@ -188,21 +164,18 @@ private struct EditOverlay: View {
     }
 
     private func finish() {
-        if liveFrame != nil { studio.endDrag() }
-        liveFrame = nil
+        studio.endDrag()
         mode = .inactive
-        guides = []
     }
 
     private func show(_ id: UUID, _ frame: CanvasRect, _ crop: Crop) {
-        liveFrame = frame
         studio.previewDrag(id, frame: frame, crop: crop)
     }
 
     private func drag(_ value: DragGesture.Value, scale: CGFloat) {
         if case .inactive = mode { begin(value, scale: scale) }
         let dx = Double(value.translation.width / scale), dy = Double(value.translation.height / scale)
-        let threshold = 8 / Double(scale) // 8 screen points, whatever the preview size
+        let threshold = 6 / Double(scale) // 6 screen points, whatever the preview size
         let flags = NSEvent.modifierFlags
         let snapping = !flags.contains(.command)
         var newGuides: [Guide] = []
@@ -213,11 +186,19 @@ private struct EditOverlay: View {
             f.y += dy
             if snapping {
                 let t = targets(excluding: id)
-                if let s = Self.snap([f.x, f.x + f.w / 2, f.x + f.w], to: t.x, threshold: threshold) {
+                let W = Double(studio.project.video.width), H = Double(studio.project.video.height)
+                // Edges snap to everything; the center only to the canvas center.
+                let sx = [Self.snap([f.x, f.x + f.w], to: t.x, threshold: threshold),
+                          Self.snap([f.x + f.w / 2], to: [W / 2], threshold: threshold)]
+                    .compactMap { $0 }.min { abs($0.delta) < abs($1.delta) }
+                let sy = [Self.snap([f.y, f.y + f.h], to: t.y, threshold: threshold),
+                          Self.snap([f.y + f.h / 2], to: [H / 2], threshold: threshold)]
+                    .compactMap { $0 }.min { abs($0.delta) < abs($1.delta) }
+                if let s = sx {
                     f.x += s.delta
                     newGuides.append(Guide(vertical: true, position: s.line))
                 }
-                if let s = Self.snap([f.y, f.y + f.h / 2, f.y + f.h], to: t.y, threshold: threshold) {
+                if let s = sy {
                     f.y += s.delta
                     newGuides.append(Guide(vertical: false, position: s.line))
                 }
@@ -280,7 +261,7 @@ private struct EditOverlay: View {
         default:
             break
         }
-        guides = newGuides
+        studio.setGuides(newGuides.map { ($0.vertical, $0.position) })
     }
 
     private func begin(_ value: DragGesture.Value, scale: CGFloat) {

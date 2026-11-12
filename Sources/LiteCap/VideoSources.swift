@@ -363,9 +363,11 @@ enum PixelBuffers {
 
 // MARK: - Browser
 
-/// Borderless off-screen window that can still take keyboard focus.
+/// Invisible off-screen window that hosts a browser source's page.
 private final class OffscreenWindow: NSWindow {
-    override var canBecomeKey: Bool { true }
+    override var canBecomeKey: Bool { false }
+    /// macOS normally drags windows back onto a screen; keep this one off-screen.
+    override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect { frameRect }
 }
 
 /// Renders a web page (alerts, chat, overlays) with a transparent background.
@@ -462,7 +464,11 @@ final class BrowserSource: VideoSource, WKNavigationDelegate {
         window.isOpaque = false
         window.backgroundColor = .clear
         window.ignoresMouseEvents = true
+        window.hasShadow = false
+        window.isExcludedFromWindowsMenu = true
+        window.collectionBehavior = [.transient, .ignoresCycle, .stationary]
         window.contentView = webView
+        window.setFrameOrigin(NSPoint(x: -30_000, y: -30_000))
         window.orderFrontRegardless()
 
         self.webView = webView

@@ -33,7 +33,10 @@ private struct AddAudioMenu: View {
             Button("Desktop Audio") { studio.addAudioSource(.desktop, name: "Desktop Audio") }
             Menu("Application Audio") {
                 ForEach(studio.apps) { app in
-                    Button(app.title) { studio.addAudioSource(.app(bundleID: app.id, name: app.title), name: app.title) }
+                    Button(app.title) {
+                        let bundleID = app.id.hasPrefix("name:") ? "" : app.id
+                        studio.addAudioSource(.app(bundleID: bundleID, name: app.title), name: app.title)
+                    }
                 }
             }
             Menu("Input") {

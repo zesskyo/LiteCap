@@ -224,8 +224,9 @@ final class AudioEngine: @unchecked Sendable {
 
     private func makeCapture(_ kind: AudioSourceKind, ring: AudioRing) -> AudioCapture {
         switch kind {
-        case .desktop: return SystemAudioCapture(app: nil, ring: ring)
-        case .app(let bundleID, let name): return SystemAudioCapture(app: (bundleID, name), ring: ring)
+        // Core Audio taps: audio-only, so no screen-sharing indicator just for capturing sound.
+        case .desktop: return AudioTapCapture(app: nil, ring: ring)
+        case .app(let bundleID, let name): return AudioTapCapture(app: (bundleID, name), ring: ring)
         case .input(let deviceID): return InputDeviceCapture(deviceID: deviceID, ring: ring)
         }
     }

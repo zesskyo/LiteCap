@@ -408,8 +408,9 @@ private struct SourcesPanel: View {
                                 Image(systemName: item.locked ? "lock" : "lock.open")
                             }.buttonStyle(IconButtonStyle())
                         }
+                        // Select on the first click right away; a second click opens Properties.
                         .onTapGesture(count: 2) { studio.editingSourceID = item.sourceID }
-                        .onTapGesture { studio.selectedItemID = item.id }
+                        .simultaneousGesture(TapGesture().onEnded { studio.selectedItemID = item.id })
                         .contextMenu { ItemMenu(itemID: item.id) }
                     }
                 }

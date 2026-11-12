@@ -82,6 +82,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>NSHumanReadableCopyright</key><string>LiteCap</string>
     <key>NSMicrophoneUsageDescription</key><string>LiteCap records and streams the microphones and audio inputs you add to the mixer.</string>
     <key>NSCameraUsageDescription</key><string>LiteCap shows cameras and capture cards you add as sources.</string>
+    <key>NSAudioCaptureUsageDescription</key><string>LiteCap records and streams desktop and app audio you add to the mixer.</string>
     <key>SUFeedURL</key><string>${FEED_URL}</string>
     <key>SUPublicEDKey</key><string>${SU_PUBLIC_KEY}</string>
     <key>SUEnableAutomaticChecks</key><true/>

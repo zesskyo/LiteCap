@@ -140,7 +140,10 @@ final class Studio: ObservableObject {
     // Audio (mixer, meters, monitoring) runs while the main window is open or you're live.
 
     @Published var previewHidden = UserDefaults.standard.bool(forKey: "previewHidden") {
-        didSet { UserDefaults.standard.set(previewHidden, forKey: "previewHidden") }
+        didSet {
+            UserDefaults.standard.set(previewHidden, forKey: "previewHidden")
+            updateActive()
+        }
     }
     private var windowClients = 0
     private(set) var isAudioActive = false
@@ -167,17 +170,17 @@ final class Studio: ObservableObject {
     }
 
     private func updateActive() {
-        let wantAudio = windowClients > 0 || isLive
+        // Hidden preview = low-power mode: the mixer only runs when live or when monitoring.
+        let monitoring = project.audioSources.contains { $0.monitor }
+        let wantAudio = isLive || monitoring || (windowClients > 0 && !previewHidden)
         if wantAudio != isAudioActive {
             isAudioActive = wantAudio
-            if wantAudio {
-                audio.start()
-                startTimers()
-            } else {
-                audio.stop()
-                stopTimers()
-            }
+            if wantAudio { audio.start() } else { audio.stop() }
         }
+        // Meters redraw 20×/s, so they only run while the preview is showing.
+        setMeters(running: isAudioActive && !previewHidden)
+        // Status-bar numbers (1×/s) whenever the window is open or we're live.
+        setStats(running: windowClients > 0 || isLive)
         let wantVideo = previewClients > 0 || isLive
         guard wantVideo != isActive else { return }
         isActive = wantVideo
@@ -211,26 +214,32 @@ final class Studio: ObservableObject {
         }
     }
 
-    private func startTimers() {
-        meterTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 20, repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                guard let self else { return }
-                var levels: [UUID: AudioEngine.Levels] = [:]
-                for source in self.project.audioSources { levels[source.id] = self.audio.levels(source.id) }
-                self.meters.levels = levels
+    private func setMeters(running: Bool) {
+        if running, meterTimer == nil {
+            meterTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 20, repeats: true) { [weak self] _ in
+                Task { @MainActor in
+                    guard let self else { return }
+                    var levels: [UUID: AudioEngine.Levels] = [:]
+                    for source in self.project.audioSources { levels[source.id] = self.audio.levels(source.id) }
+                    self.meters.levels = levels
+                }
             }
-        }
-        statsTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
-            Task { @MainActor in await self?.updateStats() }
+        } else if !running, let timer = meterTimer {
+            timer.invalidate()
+            meterTimer = nil
+            meters.levels = [:]
         }
     }
 
-    private func stopTimers() {
-        meterTimer?.invalidate()
-        statsTimer?.invalidate()
-        meterTimer = nil
-        statsTimer = nil
-        meters.levels = [:]
+    private func setStats(running: Bool) {
+        if running, statsTimer == nil {
+            statsTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+                Task { @MainActor in await self?.updateStats() }
+            }
+        } else if !running, let timer = statsTimer {
+            timer.invalidate()
+            statsTimer = nil
+        }
     }
 
     private func updateStats() async {
@@ -276,7 +285,10 @@ final class Studio: ObservableObject {
             isNormalizing = false
         }
         scheduleSave()
-        if old.audioSources != project.audioSources { audio.sync(project.audioSources) }
+        if old.audioSources != project.audioSources {
+            audio.sync(project.audioSources)
+            updateActive() // monitoring on/off can start or stop the mixer
+        }
         if old.video != project.video, isActive {
             compositor.configure(width: project.video.width, height: project.video.height, fps: project.video.fps)
             if old.video.fps != project.video.fps || old.video.width != project.video.width

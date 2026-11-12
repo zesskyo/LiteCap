@@ -108,8 +108,8 @@ final class Studio: ObservableObject {
         guard let compositor = Compositor() else { fatalError("Metal is not available on this Mac.") }
         self.compositor = compositor
         project = Project.load()
-        compositor.setFrameHandler { [hub] buffer, pts in hub.video(buffer, pts) }
-        audio.onMessage = { [weak self] text in Task { @MainActor in self?.message = text } }
+        compositor.setFrameHandler { @Sendable [hub] buffer, pts in hub.video(buffer, pts) }
+        audio.onMessage = { @Sendable [weak self] text in Task { @MainActor in self?.message = text } }
         audio.sync(project.audioSources)
         audio.setListenTrack(project.listenTrack)
 
@@ -169,7 +169,7 @@ final class Studio: ObservableObject {
             activity = nil
         }
         if hub.isEmpty { audio.removeConsumer(audioConsumerID) } else {
-            audio.addConsumer(audioConsumerID) { [hub] track, buffer, when in hub.audio(track, buffer, when) }
+            audio.addConsumer(audioConsumerID) { @Sendable [hub] track, buffer, when in hub.audio(track, buffer, when) }
         }
     }
 
@@ -292,7 +292,7 @@ final class Studio: ObservableObject {
             return existing
         }
         let source = VideoSource.make(config, fps: project.video.fps)
-        source.onSize = { [weak self] size in
+        source.onSize = { @Sendable [weak self] size in
             Task { @MainActor in self?.sourceSized(id, size) }
         }
         sources[id] = source
@@ -585,7 +585,7 @@ final class Studio: ObservableObject {
                 folder: URL(fileURLWithPath: project.record.folder), settings: project.record,
                 canvas: project.video, trackNames: project.trackNames
             )
-            output.onError = { [weak self] text in
+            output.onError = { @Sendable [weak self] text in
                 Task { @MainActor in
                     self?.message = text
                     self?.stopRecording()
@@ -612,7 +612,7 @@ final class Studio: ObservableObject {
         stats.recordMB = 0
         updateLiveActivity()
         updateActive()
-        output.finish { [weak self] result in
+        output.finish { @Sendable [weak self] result in
             Task { @MainActor in
                 switch result {
                 case .success(let url):
@@ -642,7 +642,7 @@ final class Studio: ObservableObject {
             defer { isBusy = false }
             do {
                 let output = try StreamOutput(settings: project.stream, key: key, canvas: project.video)
-                output.onState = { [weak self] state, text in
+                output.onState = { @Sendable [weak self] state, text in
                     Task { @MainActor in
                         self?.streamState = state
                         if let text { self?.message = text }

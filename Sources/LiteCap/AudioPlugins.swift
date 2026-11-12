@@ -51,7 +51,7 @@ enum PluginWindows {
             window.makeKeyAndOrderFront(nil)
             return
         }
-        unit.auAudioUnit.requestViewController { controller in
+        unit.auAudioUnit.requestViewController { @Sendable controller in
             Task { @MainActor in
                 let content: NSViewController = controller
                     ?? NSHostingController(rootView: GenericPluginView(unit: unit.auAudioUnit))

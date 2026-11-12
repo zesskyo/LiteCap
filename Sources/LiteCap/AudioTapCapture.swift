@@ -54,11 +54,11 @@ final class AudioTapCapture: AudioCapture, @unchecked Sendable {
                 scheduleRetry()
                 return
             }
-            description = CATapDescription(stereoMixdownOfProcesses: processes.map { NSNumber(value: $0) })
+            description = CATapDescription(stereoMixdownOfProcesses: processes)
         } else {
             // Everything except LiteCap itself (so monitoring doesn't feed back).
             let me = Self.processObject(pid: ProcessInfo.processInfo.processIdentifier)
-            description = CATapDescription(stereoGlobalTapButExcludeProcesses: me.map { [NSNumber(value: $0)] } ?? [])
+            description = CATapDescription(stereoGlobalTapButExcludeProcesses: me.map { [$0] } ?? [])
         }
         description.uuid = UUID()
         description.muteBehavior = .unmuted

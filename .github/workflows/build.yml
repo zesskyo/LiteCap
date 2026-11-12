@@ -5,6 +5,9 @@ on:
     branches: [main]
     tags: ["v*"]
   pull_request:
+  # Releases made on github.com (which also create the tag) build too.
+  release:
+    types: [published]
   workflow_dispatch:
 
 permissions:
@@ -93,8 +96,13 @@ jobs:
         run: |
           FILES=(build/*.dmg)
           [ -f build/appcast.xml ] && FILES+=(build/appcast.xml)
-          gh release create "$GITHUB_REF_NAME" "${FILES[@]}" \
-            --title "LiteCap ${GITHUB_REF_NAME#v}" --generate-notes
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            # Release already made on github.com: attach the files to it.
+            gh release upload "$GITHUB_REF_NAME" "${FILES[@]}" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" "${FILES[@]}" \
+              --title "LiteCap ${GITHUB_REF_NAME#v}" --generate-notes
+          fi
 
       - name: Publish rolling "Latest build" (main)
         if: github.ref == 'refs/heads/main'

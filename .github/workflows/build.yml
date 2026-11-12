@@ -8,13 +8,24 @@ on:
   # Releases made on github.com (which also create the tag) build too.
   release:
     types: [published]
+  # Actions tab → Build → Run workflow: give a version to build and publish a release
+  # (the workflow creates the tag itself), or leave it empty for just a build.
   workflow_dispatch:
+    inputs:
+      release:
+        description: "Make a release: its version tag (v0.2.1), or empty for just a build"
+        required: false
+        default: ""
+      notes:
+        description: "What changed: a Markdown list (empty = GitHub writes notes from the commits)"
+        required: false
+        default: ""
 
 permissions:
   contents: write
 
 concurrency:
-  group: build-${{ github.ref }}
+  group: build-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: true
 
 jobs:
@@ -41,6 +52,9 @@ jobs:
       NOTARY_PASSWORD: ${{ secrets.NOTARY_PASSWORD }}
       # Signs updates for the in-app updater (see scripts/setup-sparkle-keys.sh).
       SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+      # The release this run publishes (from the Run workflow form or a v* tag), or empty.
+      RELEASE_TAG: ${{ inputs.release || (startsWith(github.ref, 'refs/tags/v') && github.ref_name) || '' }}
+      RELEASE_NOTES: ${{ inputs.notes }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -71,8 +85,18 @@ jobs:
       - name: Test
         run: swift test
 
+      - name: Check the release version
+        if: env.RELEASE_TAG != ''
+        run: |
+          if ! [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Release version must look like v1.2.3 (got '$RELEASE_TAG')"
+            exit 1
+          fi
+
       - name: Build app and disk image
-        run: ./build-app.sh --dmg
+        run: |
+          if [ -n "$RELEASE_TAG" ]; then export VERSION="${RELEASE_TAG#v}"; fi
+          ./build-app.sh --dmg
 
       - uses: actions/upload-artifact@v4
         with:
@@ -80,32 +104,37 @@ jobs:
           path: build/*.dmg
           if-no-files-found: error
 
-      - name: Sign update and write appcast (version tags)
-        if: startsWith(github.ref, 'refs/tags/v')
+      - name: Sign update and write appcast (releases)
+        if: env.RELEASE_TAG != ''
         run: |
           if [ -z "$SPARKLE_PRIVATE_KEY" ] || [ ! -s Resources/SparklePublicKey.txt ]; then
             echo "::warning::Update key not set up (scripts/setup-sparkle-keys.sh), so this release won't be offered as an in-app update."
           else
-            TAG="$GITHUB_REF_NAME" ./scripts/make-appcast.sh
+            TAG="$RELEASE_TAG" ./scripts/make-appcast.sh
           fi
 
-      - name: Publish release (version tags)
-        if: startsWith(github.ref, 'refs/tags/v')
+      - name: Publish release
+        if: env.RELEASE_TAG != ''
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           FILES=(build/*.dmg)
           [ -f build/appcast.xml ] && FILES+=(build/appcast.xml)
-          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            # Release already made on github.com: attach the files to it.
-            gh release upload "$GITHUB_REF_NAME" "${FILES[@]}" --clobber
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            # Release already exists (e.g. made on github.com): attach the files to it.
+            gh release upload "$RELEASE_TAG" "${FILES[@]}" --clobber
           else
-            gh release create "$GITHUB_REF_NAME" "${FILES[@]}" \
-              --title "LiteCap ${GITHUB_REF_NAME#v}" --generate-notes
+            # Creates the tag at this commit, too.
+            NOTES_ARGS=(--generate-notes)
+            if [ -n "$RELEASE_NOTES" ]; then
+              NOTES_ARGS=(--notes "$(printf '**Changes**\n\n%s\n\n**Download**\n\n- New install: download the .dmg below\n- Already installed: LiteCap updates itself (LiteCap → Check for Updates…)\n' "$RELEASE_NOTES")")
+            fi
+            gh release create "$RELEASE_TAG" "${FILES[@]}" --target "$GITHUB_SHA" \
+              --title "LiteCap ${RELEASE_TAG#v}" "${NOTES_ARGS[@]}"
           fi
 
       - name: Publish rolling "Latest build" (main)
-        if: github.ref == 'refs/heads/main'
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

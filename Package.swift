@@ -16,11 +16,15 @@ var targets: [Target] = [
     )
 ]
 
+var dependencies: [Package.Dependency] = []
+
 #if os(macOS)
+// Sparkle: the standard macOS auto-updater (pinned; prebuilt, signed framework).
+dependencies.append(.package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.6.4"))
 targets.append(
     .executableTarget(
         name: "LiteCap",
-        dependencies: ["LiteCapCore"],
+        dependencies: ["LiteCapCore", .product(name: "Sparkle", package: "Sparkle")],
         path: "Sources/LiteCap",
         swiftSettings: [.swiftLanguageMode(.v5)]
     )
@@ -30,5 +34,6 @@ targets.append(
 let package = Package(
     name: "LiteCap",
     platforms: [.macOS(.v15)],
+    dependencies: dependencies,
     targets: targets
 )

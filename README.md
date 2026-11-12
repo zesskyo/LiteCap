@@ -44,6 +44,22 @@ macOS plugins come as **Audio Units**, and almost every VST maker also installs 
 
 > Each new unsigned build counts as a different app to macOS, so it may ask for permissions again after you update.
 
+## Updates
+
+LiteCap updates itself with [Sparkle](https://sparkle-project.org). It checks once a day (you can switch this off in Settings → General), and you can check any time with **LiteCap → Check for Updates…** or from the menu bar icon. It never checks or shows update prompts while you're recording or streaming.
+
+Only numbered releases (`v*` tags) are offered as updates; the "Latest build (main)" pre-release isn't. Each update is signed with the project's private key, and the app refuses any update that isn't.
+
+**One-time setup for maintainers.** On your Mac, from the repo folder, after building once:
+
+```bash
+./scripts/setup-sparkle-keys.sh
+```
+
+This creates the signing key in your Keychain and writes the public half to `Resources/SparklePublicKey.txt`. It saves the private half as the `SPARKLE_PRIVATE_KEY` repository secret if the `gh` CLI is logged in; otherwise it prints it for you to add by hand. Commit the public key file, and every tag from then on publishes an `appcast.xml` (the feed of available versions) alongside its `.dmg`.
+
+> Until the app is signed with a paid Apple Developer ID, macOS may ask for Screen Recording permission again after an update.
+
 ## Build it yourself
 
 You need Xcode 16 or newer, or its Command Line Tools.
@@ -72,7 +88,8 @@ git push origin v0.3.0
 | Path | What it does |
 |---|---|
 | `Tests/LiteCapCoreTests/` | Unit and integration tests for the core (run on Linux and macOS in CI) |
-| `Resources/` | App icon and entitlements |
+| `Resources/` | App icon, entitlements, update public key |
+| `scripts/` | Update key setup and appcast generation |
 | `Sources/LiteCapCore/` | Platform-independent, tested on Linux against ffmpeg: RTMP client, AMF0, FLV tags (including multitrack audio), Matroska writer, audio FIFO |
 | `Studio.swift` | The brain: scenes, sources, outputs, start/stop |
 | `Compositor.swift` | Metal renderer for the canvas, plus the preview |

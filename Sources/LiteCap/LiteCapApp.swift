@@ -4,6 +4,7 @@ import SwiftUI
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let studio = Studio()
+    lazy var updater = Updater(isLive: { [unowned self] in self.studio.isLive })
 
     /// Finish the recording file / end the stream cleanly before quitting.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
@@ -27,13 +28,16 @@ struct LiteCapApp: App {
             MainView().environmentObject(delegate.studio)
         }
         .defaultSize(width: 1180, height: 820)
+        .commands {
+            CommandGroup(after: .appInfo) { CheckForUpdatesButton(updater: delegate.updater) }
+        }
 
         Settings {
-            SettingsView().environmentObject(delegate.studio)
+            SettingsView().environmentObject(delegate.studio).environmentObject(delegate.updater)
         }
 
         MenuBarExtra {
-            MenuContent().environmentObject(delegate.studio)
+            MenuContent().environmentObject(delegate.studio).environmentObject(delegate.updater)
         } label: {
             MenuBarIcon(studio: delegate.studio)
         }
@@ -49,6 +53,7 @@ private struct MenuBarIcon: View {
 
 private struct MenuContent: View {
     @EnvironmentObject var studio: Studio
+    @EnvironmentObject var updater: Updater
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
@@ -70,6 +75,7 @@ private struct MenuContent: View {
             NSApp.activate()
         }
         Button("Show Recordings") { studio.revealRecordings() }
+        CheckForUpdatesButton(updater: updater)
         Divider()
         Button("Quit LiteCap") { NSApp.terminate(nil) }
     }

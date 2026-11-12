@@ -36,6 +36,8 @@ jobs:
       NOTARY_APPLE_ID: ${{ secrets.NOTARY_APPLE_ID }}
       NOTARY_TEAM_ID: ${{ secrets.NOTARY_TEAM_ID }}
       NOTARY_PASSWORD: ${{ secrets.NOTARY_PASSWORD }}
+      # Signs updates for the in-app updater (see scripts/setup-sparkle-keys.sh).
+      SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -75,12 +77,23 @@ jobs:
           path: build/*.dmg
           if-no-files-found: error
 
+      - name: Sign update and write appcast (version tags)
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          if [ -z "$SPARKLE_PRIVATE_KEY" ] || [ ! -s Resources/SparklePublicKey.txt ]; then
+            echo "::warning::Update key not set up (scripts/setup-sparkle-keys.sh), so this release won't be offered as an in-app update."
+          else
+            TAG="$GITHUB_REF_NAME" ./scripts/make-appcast.sh
+          fi
+
       - name: Publish release (version tags)
         if: startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" build/*.dmg \
+          FILES=(build/*.dmg)
+          [ -f build/appcast.xml ] && FILES+=(build/appcast.xml)
+          gh release create "$GITHUB_REF_NAME" "${FILES[@]}" \
             --title "LiteCap ${GITHUB_REF_NAME#v}" --generate-notes
 
       - name: Publish rolling "Latest build" (main)

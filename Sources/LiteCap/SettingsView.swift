@@ -9,7 +9,7 @@ struct SettingsView: View {
             RecordingSettingsTab().tabItem { Label("Recording", systemImage: "record.circle") }
             VideoSettingsTab().tabItem { Label("Video", systemImage: "display") }
             AudioSettingsTab().tabItem { Label("Audio", systemImage: "waveform") }
-            HotkeysTab().tabItem { Label("Hotkeys", systemImage: "keyboard") }
+            GeneralTab().tabItem { Label("General", systemImage: "gearshape") }
         }
         .frame(width: 560, height: 480)
     }
@@ -185,12 +185,39 @@ private struct AudioSettingsTab: View {
     }
 }
 
-private struct HotkeysTab: View {
+private struct GeneralTab: View {
+    @EnvironmentObject var updater: Updater
+
     var body: some View {
         Form {
-            LabeledContent("Start / stop recording") { Text("⌃⌥⌘R") }
-            LabeledContent("Go live / end stream") { Text("⌃⌥⌘S") }
-            Text("These work from any app, including fullscreen games.").font(.caption).foregroundStyle(.secondary)
+            Section("Updates") {
+                if updater.isAvailable {
+                    Toggle("Automatically check for updates", isOn: Binding(
+                        get: { updater.automaticallyChecks },
+                        set: { updater.automaticallyChecks = $0 }
+                    ))
+                    HStack {
+                        Button("Check Now") { updater.checkForUpdates() }.disabled(!updater.canCheckForUpdates)
+                        if let last = updater.lastCheck {
+                            Text("Last checked \(last.formatted(.relative(presentation: .named)))")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                    Text("Updates are never installed while you're recording or streaming.")
+                        .font(.caption).foregroundStyle(.secondary)
+                } else {
+                    Text("This build was made without an update key, so it can't update itself. Download releases from GitHub instead.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                LabeledContent("Version") {
+                    Text("\(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?") (\(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"))")
+                }
+            }
+            Section("Hotkeys") {
+                LabeledContent("Start / stop recording") { Text("⌃⌥⌘R") }
+                LabeledContent("Go live / end stream") { Text("⌃⌥⌘S") }
+                Text("These work from any app, including fullscreen games.").font(.caption).foregroundStyle(.secondary)
+            }
         }
         .formStyle(.grouped)
     }

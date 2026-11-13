@@ -122,6 +122,10 @@ final class InputDeviceCapture: NSObject, AudioCapture, AVCaptureAudioDataOutput
                 return
             }
             session.beginConfiguration()
+            // Start from a clean session every time. Restarting used to add another output on top
+            // of the old one, so each chunk of mic audio arrived 2×, 3×, … and crackled.
+            session.inputs.forEach { session.removeInput($0) }
+            session.outputs.forEach { session.removeOutput($0) }
             if session.canAddInput(input) { session.addInput(input) }
             let output = AVCaptureAudioDataOutput()
             // Ask for one fixed format (48 kHz stereo float), so a device changing its own

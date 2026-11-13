@@ -20,6 +20,10 @@ struct WindowItem: Identifiable, Hashable {
 @MainActor
 final class MeterStore: ObservableObject {
     @Published var levels: [UUID: AudioEngine.Levels] = [:]
+    /// Highest recent peak per channel (held 1.5 s, then follows the signal).
+    @Published var holds: [UUID: AudioEngine.Levels] = [:]
+    /// Sources that hit 0 dBFS in the last 2 s.
+    @Published var clipped: Set<UUID> = []
 }
 
 /// Once-a-second numbers for the status bar.
@@ -33,7 +37,9 @@ final class LiveStats: ObservableObject {
     @Published var skipped = 0
     @Published var cpu = 0.0
     @Published var gpu: Double?
-    @Published var sourceProblems: [String] = []
+    /// Problems per source (shown as a red name with the text as a tooltip).
+    @Published var videoProblems: [UUID: String] = [:]
+    @Published var audioProblems: [UUID: String] = [:]
 }
 
 /// Routes canvas frames and track audio to whichever outputs are running (any thread).
@@ -246,18 +252,37 @@ final class Studio: ObservableObject {
     private func setMeters(running: Bool) {
         if running, meterTimer == nil {
             meterTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 20, repeats: true) { [weak self] _ in
-                Task { @MainActor in
-                    guard let self else { return }
-                    var levels: [UUID: AudioEngine.Levels] = [:]
-                    for source in self.project.audioSources { levels[source.id] = self.audio.levels(source.id) }
-                    self.meters.levels = levels
-                }
+                Task { @MainActor in self?.updateMeters() }
             }
         } else if !running, let timer = meterTimer {
             timer.invalidate()
             meterTimer = nil
             meters.levels = [:]
         }
+    }
+
+    private var peakHolds: [UUID: (left: Float, leftTime: Double, right: Float, rightTime: Double)] = [:]
+    private var clipTimes: [UUID: Double] = [:]
+
+    private func updateMeters() {
+        let now = CFAbsoluteTimeGetCurrent()
+        var levels: [UUID: AudioEngine.Levels] = [:]
+        var holds: [UUID: AudioEngine.Levels] = [:]
+        var clipped: Set<UUID> = []
+        for source in project.audioSources {
+            let level = audio.levels(source.id)
+            levels[source.id] = level
+            var hold = peakHolds[source.id] ?? (0, 0, 0, 0)
+            if level.left >= hold.left || now - hold.leftTime > 1.5 { hold.left = level.left; hold.leftTime = now }
+            if level.right >= hold.right || now - hold.rightTime > 1.5 { hold.right = level.right; hold.rightTime = now }
+            peakHolds[source.id] = hold
+            holds[source.id] = AudioEngine.Levels(left: hold.left, right: hold.right)
+            if max(level.left, level.right) >= 0.999 { clipTimes[source.id] = now }
+            if let time = clipTimes[source.id], now - time < 2 { clipped.insert(source.id) }
+        }
+        meters.levels = levels
+        meters.holds = holds
+        if meters.clipped != clipped { meters.clipped = clipped }
     }
 
     private func setStats(running: Bool) {
@@ -284,15 +309,15 @@ final class Studio: ObservableObject {
             stats.dropped = s.dropped
             stats.congested = s.congested
         }
-        var problems: [String] = []
-        for source in sources.values where !source.status.isEmpty {
-            problems.append("\(source.config.name): \(source.status)")
-        }
+        var videoProblems: [UUID: String] = [:]
+        for source in sources.values where !source.status.isEmpty { videoProblems[source.id] = source.status }
+        var audioProblems: [UUID: String] = [:]
         for source in project.audioSources {
             let status = audio.captureStatus(source.id)
-            if !status.isEmpty { problems.append("\(source.name): \(status)") }
+            if !status.isEmpty { audioProblems[source.id] = status }
         }
-        if stats.sourceProblems != problems { stats.sourceProblems = problems }
+        if stats.videoProblems != videoProblems { stats.videoProblems = videoProblems }
+        if stats.audioProblems != audioProblems { stats.audioProblems = audioProblems }
     }
 
     // MARK: - Project changes

@@ -67,7 +67,9 @@ private struct ChannelStrip: View {
         if let source = studio.project.audioSources.first(where: { $0.id == sourceID }) {
             VStack(spacing: 5) {
                 Text(Self.dB(source.volume)).font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
-                HStack(spacing: 4) {
+                    .help("Fader level")
+                HStack(alignment: .top, spacing: 3) {
+                    DBScale()
                     Meter(sourceID: sourceID, meters: studio.meters, muted: source.muted)
                     VerticalFader(value: Binding(
                         get: { Self.sliderValue(source.volume) },
@@ -75,6 +77,7 @@ private struct ChannelStrip: View {
                     ), resetValue: Self.sliderValue(1))
                 }
                 .frame(maxHeight: .infinity)
+                PeakReadout(sourceID: sourceID, meters: studio.meters)
                 HStack(spacing: 2) {
                     Button { studio.updateAudioSource(sourceID) { $0.muted.toggle() } } label: {
                         Image(systemName: source.muted ? "speaker.slash.fill" : "speaker.wave.2")
@@ -98,14 +101,15 @@ private struct ChannelStrip: View {
                     }
                     .menuStyle(.borderlessButton).menuIndicator(.hidden).frame(width: 22)
                 }
-                Text(source.name).font(.caption).lineLimit(1).truncationMode(.middle)
-                    .foregroundStyle(source.filters.isEmpty ? Color.primary : Theme.active)
+                SourceName(name: source.name, problemKey: sourceID, video: false,
+                           highlight: source.filters.isEmpty ? nil : Theme.active, stats: studio.stats)
+                    .font(.caption)
                     .frame(maxWidth: .infinity)
                     .contentShape(Rectangle())
                     .help("Drag the name to reorder")
                     .draggable(sourceID.uuidString)
             }
-            .frame(width: 84)
+            .frame(width: 104)
             .padding(.vertical, 6)
             .background(dropTargeted ? Theme.selection : Theme.panel)
             .dropDestination(for: String.self) { items, _ in
@@ -156,7 +160,36 @@ private struct VerticalFader: View {
     }
 }
 
-/// Stereo peak meter, −60…0 dBFS, bottom-up. Observes only the meter store.
+/// Where a level sits on the meter: −60…0 dBFS mapped to 0…1.
+private func meterFraction(_ peak: Float) -> CGFloat {
+    let db = peak > 0 ? 20 * log10(Double(peak)) : -60
+    return CGFloat(max(0, min(1, (db + 60) / 60)))
+}
+
+/// dB markings beside the meter. The top 4 points are the clip light's row.
+private struct DBScale: View {
+    private static let marks = [0, -6, -12, -20, -30, -40, -60]
+
+    var body: some View {
+        GeometryReader { geo in
+            let top: CGFloat = 6, height = geo.size.height - top
+            ForEach(Self.marks, id: \.self) { db in
+                let y = top + (1 - CGFloat(db + 60) / 60) * height
+                HStack(spacing: 1) {
+                    Text(db == 0 ? "0" : "\(db)")
+                        .font(.system(size: 7).monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .frame(width: 16, alignment: .trailing)
+                    Rectangle().fill(Color.secondary.opacity(0.6)).frame(width: 3, height: 1)
+                }
+                .position(x: 10, y: y)
+            }
+        }
+        .frame(width: 21)
+    }
+}
+
+/// Stereo peak meter with peak-hold lines and a clip light. Observes only the meter store.
 private struct Meter: View {
     let sourceID: UUID
     @ObservedObject var meters: MeterStore
@@ -164,18 +197,24 @@ private struct Meter: View {
 
     var body: some View {
         let levels = meters.levels[sourceID] ?? AudioEngine.Levels()
-        HStack(spacing: 2) {
-            bar(levels.left)
-            bar(levels.right)
+        let holds = meters.holds[sourceID] ?? AudioEngine.Levels()
+        VStack(spacing: 2) {
+            Rectangle()
+                .fill(meters.clipped.contains(sourceID) ? Color.red : Color.gray.opacity(0.25))
+                .frame(height: 4)
+                .help("Turns red when this source hits 0 dB (clipping)")
+            HStack(spacing: 2) {
+                bar(levels.left, hold: holds.left)
+                bar(levels.right, hold: holds.right)
+            }
         }
         .frame(width: 14)
         .opacity(muted ? 0.35 : 1)
     }
 
-    private func bar(_ peak: Float) -> some View {
+    private func bar(_ peak: Float, hold: Float) -> some View {
         GeometryReader { geo in
-            let db = peak > 0 ? 20 * log10(Double(peak)) : -60
-            let fraction = max(0, min(1, (db + 60) / 60))
+            let h = geo.size.height
             ZStack(alignment: .bottom) {
                 Rectangle().fill(Color.gray.opacity(0.2))
                 Rectangle()
@@ -185,9 +224,28 @@ private struct Meter: View {
                         .init(color: .yellow, location: 0.85),
                         .init(color: .red, location: 1)
                     ], startPoint: .bottom, endPoint: .top))
-                    .mask(alignment: .bottom) { Rectangle().frame(height: geo.size.height * fraction) }
+                    .mask(alignment: .bottom) { Rectangle().frame(height: h * meterFraction(peak)) }
+                if hold > 0 {
+                    Rectangle().fill(Color.white.opacity(0.85)).frame(height: 1.5)
+                        .offset(y: -h * meterFraction(hold) + 0.75)
+                }
             }
         }
+    }
+}
+
+/// Recent peak in dB under the meter.
+private struct PeakReadout: View {
+    let sourceID: UUID
+    @ObservedObject var meters: MeterStore
+
+    var body: some View {
+        let hold = meters.holds[sourceID] ?? AudioEngine.Levels()
+        let peak = max(hold.left, hold.right)
+        Text(peak > 0.000_01 ? String(format: "%.1f", 20 * log10(Double(peak))) : "-inf")
+            .font(.system(size: 9).monospacedDigit())
+            .foregroundStyle(meters.clipped.contains(sourceID) ? Color.red : Color.secondary)
+            .help("Recent peak (dBFS)")
     }
 }
 

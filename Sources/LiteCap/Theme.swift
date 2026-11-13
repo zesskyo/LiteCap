@@ -70,3 +70,22 @@ struct FlatRow<Content: View>: View {
 let plainNumber = IntegerFormatStyle<Int>().grouping(.never)
 /// Whole-pixel decimals without separators: 1480, not 1,480.
 let plainDecimal = FloatingPointFormatStyle<Double>().grouping(.never).precision(.fractionLength(0))
+
+/// A source's name: red when that source has a problem (hover to see what).
+struct SourceName: View {
+    let name: String
+    let problemKey: UUID
+    let video: Bool
+    var dimmed = false
+    var highlight: Color?
+    @ObservedObject var stats: LiveStats
+
+    var body: some View {
+        let problem = video ? stats.videoProblems[problemKey] : stats.audioProblems[problemKey]
+        Text(name)
+            .lineLimit(1)
+            .truncationMode(.middle)
+            .foregroundStyle(problem != nil ? Color.red : (highlight ?? (dimmed ? Color.secondary : Color.primary)))
+            .help(problem ?? name)
+    }
+}

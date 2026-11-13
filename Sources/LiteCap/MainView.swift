@@ -398,8 +398,8 @@ private struct SourcesPanel: View {
                         let source = studio.project.videoSource(item.sourceID)
                         FlatRow(selected: item.id == studio.selectedItemID) {
                             Image(systemName: source?.kind.symbol ?? "questionmark").frame(width: 16)
-                            Text(source?.name ?? "Missing").lineLimit(1)
-                                .foregroundStyle(item.visible ? .primary : .secondary)
+                            SourceName(name: source?.name ?? "Missing", problemKey: item.sourceID,
+                                       video: true, dimmed: !item.visible, stats: studio.stats)
                             Spacer()
                             Button { studio.updateItem(item.id) { $0.visible.toggle() } } label: {
                                 Image(systemName: item.visible ? "eye" : "eye.slash")
@@ -528,10 +528,6 @@ private struct StatusBarContent: View {
         HStack(spacing: 14) {
             Text(studio.message).lineLimit(1).truncationMode(.tail).foregroundStyle(.secondary)
             Spacer()
-            if let problem = stats.sourceProblems.first {
-                Text(problem).foregroundStyle(.orange).lineLimit(1)
-                    .help(stats.sourceProblems.joined(separator: "\n"))
-            }
             Text(String(format: "CPU %.1f%%", stats.cpu))
             if let gpu = stats.gpu { Text(String(format: "GPU %.0f%%", gpu)) }
             Text(String(format: "%.1f / %d fps", stats.fps, studio.project.video.fps))

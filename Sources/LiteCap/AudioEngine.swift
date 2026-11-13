@@ -1,3 +1,4 @@
+import AudioToolbox
 import AVFoundation
 import LiteCapCore
 
@@ -51,12 +52,20 @@ final class AudioEngine: @unchecked Sendable {
         for track in 1...Project.trackCount {
             let mixer = AVAudioMixerNode()
             let listen = AVAudioMixerNode()
+            // Apple's peak limiter keeps each track below 0 dBFS, so loud peaks (often the mic,
+            // or several sources summed) don't clip into crackle in the recording/stream.
+            let limiter = AVAudioUnitEffect(audioComponentDescription: AudioComponentDescription(
+                componentType: kAudioUnitType_Effect, componentSubType: kAudioUnitSubType_PeakLimiter,
+                componentManufacturer: kAudioUnitManufacturer_Apple, componentFlags: 0, componentFlagsMask: 0
+            ))
             engine.attach(mixer)
+            engine.attach(limiter)
             engine.attach(listen)
-            engine.connect(mixer, to: listen, format: mixFormat)
+            engine.connect(mixer, to: limiter, format: mixFormat)
+            engine.connect(limiter, to: listen, format: mixFormat)
             engine.connect(listen, to: main, format: mixFormat)
             listen.outputVolume = 0
-            mixer.installTap(onBus: 0, bufferSize: 2048, format: mixFormat) { [weak self] buffer, when in
+            limiter.installTap(onBus: 0, bufferSize: 2048, format: mixFormat) { [weak self] buffer, when in
                 self?.deliver(track: track, buffer, when)
             }
             trackMixers.append(mixer)

@@ -160,3 +160,108 @@ enum AppWindows {
         NSApp.activate()
     }
 }
+
+// MARK: - Projector
+
+/// A clean, borderless window showing just the canvas, to share in Discord/Zoom/Meet as a window.
+final class ProjectorWindow: NSWindow {
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { true }
+
+    /// Esc closes the projector.
+    override func cancelOperation(_ sender: Any?) { performClose(sender) }
+    override func performClose(_ sender: Any?) { AppWindows.closeProjector() }
+}
+
+/// Fills the projector: drag to move, double-click for full screen, right-click for a menu.
+private final class ProjectorControlView: NSView {
+    override func mouseDown(with event: NSEvent) {
+        if event.clickCount == 2 { window?.toggleFullScreen(nil) } else { window?.performDrag(with: event) }
+    }
+
+    override func rightMouseDown(with event: NSEvent) {
+        let menu = NSMenu()
+        for (title, scale) in [("50% Size", 0.5), ("100% Size", 1.0)] {
+            let item = NSMenuItem(title: title, action: #selector(resize(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = scale
+            menu.addItem(item)
+        }
+        let full = NSMenuItem(title: "Full Screen", action: #selector(fullScreen), keyEquivalent: "")
+        full.target = self
+        menu.addItem(full)
+        menu.addItem(.separator())
+        let close = NSMenuItem(title: "Close Projector", action: #selector(closeProjector), keyEquivalent: "")
+        close.target = self
+        menu.addItem(close)
+        NSMenu.popUpContextMenu(menu, with: event, for: self)
+    }
+
+    @objc private func resize(_ sender: NSMenuItem) {
+        guard let window, let scale = sender.representedObject as? Double, let size = AppWindows.canvasSize else { return }
+        let frame = window.frame
+        let newSize = NSSize(width: size.width * scale, height: size.height * scale)
+        window.setFrame(NSRect(x: frame.minX, y: frame.maxY - newSize.height, width: newSize.width, height: newSize.height),
+                        display: true, animate: true)
+    }
+
+    @objc private func fullScreen() { window?.toggleFullScreen(nil) }
+    @objc private func closeProjector() { MainActor.assumeIsolated { AppWindows.closeProjector() } }
+}
+
+private struct ProjectorControls: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView { ProjectorControlView() }
+    func updateNSView(_ nsView: NSView, context: Context) {}
+}
+
+/// The canvas with no editing overlay. Counts as a preview, so video keeps running while it's open.
+private struct ProjectorView: View {
+    @EnvironmentObject var studio: Studio
+
+    var body: some View {
+        ZStack {
+            Color.black
+            PreviewSurface(compositor: studio.compositor, showsOverlay: false)
+            ProjectorControls()
+        }
+        .onAppear { studio.previewAppeared() }
+        .onDisappear { studio.previewDisappeared() }
+    }
+}
+
+extension AppWindows {
+    private static var projector: ProjectorWindow?
+
+    static var canvasSize: NSSize? {
+        studio.map { NSSize(width: $0.project.video.width, height: $0.project.video.height) }
+    }
+
+    static func showProjector() {
+        guard let studio else { return }
+        if projector == nil {
+            let canvas = canvasSize ?? NSSize(width: 1920, height: 1080)
+            let size = NSSize(width: canvas.width / 2, height: canvas.height / 2)
+            let window = ProjectorWindow(contentRect: NSRect(origin: .zero, size: size),
+                                         styleMask: [.borderless, .resizable, .miniaturizable],
+                                         backing: .buffered, defer: false)
+            window.title = "LiteCap Projector" // the name Discord etc. list it under
+            window.isReleasedWhenClosed = false
+            window.backgroundColor = .black
+            window.hasShadow = true
+            window.contentAspectRatio = canvas
+            window.collectionBehavior.insert(.fullScreenPrimary)
+            window.contentView = NSHostingView(rootView: ProjectorView().environmentObject(studio))
+            window.center()
+            projector = window
+        }
+        projector?.makeKeyAndOrderFront(nil)
+        NSApp.activate()
+    }
+
+    static func closeProjector() {
+        guard let window = projector else { return }
+        projector = nil
+        window.orderOut(nil)
+        window.contentView = nil // tears down the view, so video stops if nothing else needs it
+    }
+}

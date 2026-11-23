@@ -483,6 +483,9 @@ private struct ControlsPanel: View {
                 .buttonStyle(FlatButtonStyle(fullWidth: true))
             Button(studio.previewHidden ? "Show Preview" : "Hide Preview") { studio.previewHidden.toggle() }
                 .buttonStyle(FlatButtonStyle(fullWidth: true))
+            Button("Projector") { AppWindows.showProjector() }
+                .buttonStyle(FlatButtonStyle(fullWidth: true))
+                .help("A clean window of the canvas, to share in Discord, Zoom, etc.")
             Spacer()
             LiveTimers()
         }

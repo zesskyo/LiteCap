@@ -238,8 +238,10 @@ final class Compositor: @unchecked Sendable {
 /// Shows the compositor's latest frame, aspect-fit.
 struct PreviewSurface: NSViewRepresentable {
     let compositor: Compositor
+    /// The editing box and snap guides (off for the Projector).
+    var showsOverlay = true
 
-    func makeCoordinator() -> Renderer { Renderer(compositor: compositor) }
+    func makeCoordinator() -> Renderer { Renderer(compositor: compositor, showsOverlay: showsOverlay) }
 
     func makeNSView(context: Context) -> MTKView {
         let view = MTKView(frame: .zero, device: compositor.device)
@@ -256,8 +258,11 @@ struct PreviewSurface: NSViewRepresentable {
         let compositor: Compositor
         private let queue: MTLCommandQueue?
 
-        init(compositor: Compositor) {
+        private let showsOverlay: Bool
+
+        init(compositor: Compositor, showsOverlay: Bool) {
             self.compositor = compositor
+            self.showsOverlay = showsOverlay
             queue = compositor.device.makeCommandQueue()
         }
 
@@ -324,7 +329,7 @@ struct PreviewSurface: NSViewRepresentable {
                 encoder.setFragmentBytes(&quad, length: MemoryLayout<Compositor.Quad>.stride, index: 0)
                 encoder.setFragmentTexture(texture, index: 0)
                 encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
-                drawOverlay(encoder, view: view, sx: sx, sy: sy)
+                if showsOverlay { drawOverlay(encoder, view: view, sx: sx, sy: sy) }
             }
             encoder.endEncoding()
             commands.present(drawable)

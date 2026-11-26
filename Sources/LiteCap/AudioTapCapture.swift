@@ -99,7 +99,11 @@ final class AudioTapCapture: AudioCapture, @unchecked Sendable {
         }
         aggregateID = device
 
-        guard var asbd = Self.tapFormat(tap), let tapFormat = AVAudioFormat(streamDescription: &asbd) else {
+        // The audio arrives through the aggregate device, at *its* sample rate (the output
+        // device's, e.g. 96 kHz), which can differ from the tap's own format. Using the tap's
+        // rate there mislabels every sample (96 kHz played as 48 kHz = an octave lower).
+        guard let sampleRate = Self.deviceSampleRate(device) ?? Self.tapFormat(tap).map({ $0.mSampleRate }),
+              sampleRate > 0 else {
             status = "Couldn't read the audio format"
             close()
             return
@@ -108,9 +112,22 @@ final class AudioTapCapture: AudioCapture, @unchecked Sendable {
         // Everything the callback needs is captured here, so it never touches shared state.
         let converter = PCMConverter()
         let ring = self.ring
+        var formats: [String: AVAudioFormat] = [:]
         var proc: AudioDeviceIOProcID?
         err = AudioDeviceCreateIOProcIDWithBlock(&proc, device, ioQueue) { _, input, _, _, _ in
-            guard let buffer = AVAudioPCMBuffer(pcmFormat: tapFormat, bufferListNoCopy: input, deallocator: nil),
+            // Read the layout from the buffers themselves (Float32; one interleaved buffer,
+            // or one buffer per channel) rather than trusting a reported format.
+            let list = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: input))
+            guard let first = list.first, first.mDataByteSize > 0 else { return }
+            let interleaved = list.count == 1
+            let channels = interleaved ? Int(first.mNumberChannels) : list.count
+            guard channels > 0 else { return }
+            let key = "\(channels)-\(interleaved)"
+            let format = formats[key] ?? AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: sampleRate,
+                                                       channels: AVAudioChannelCount(channels), interleaved: interleaved)
+            guard let format else { return }
+            formats[key] = format
+            guard let buffer = AVAudioPCMBuffer(pcmFormat: format, bufferListNoCopy: input, deallocator: nil),
                   let converted = converter.convert(buffer) else { return }
             ring.write(converted)
         }
@@ -205,6 +222,14 @@ final class AudioTapCapture: AudioCapture, @unchecked Sendable {
         var size = UInt32(MemoryLayout<pid_t>.size)
         AudioObjectGetPropertyData(object, &address, 0, nil, &size, &pid)
         return pid
+    }
+
+    /// The rate the aggregate device (and so the IO callback) actually runs at.
+    private static func deviceSampleRate(_ device: AudioObjectID) -> Double? {
+        var address = address(kAudioDevicePropertyNominalSampleRate)
+        var rate: Float64 = 0
+        var size = UInt32(MemoryLayout<Float64>.size)
+        return AudioObjectGetPropertyData(device, &address, 0, nil, &size, &rate) == noErr && rate > 0 ? rate : nil
     }
 
     private static func tapFormat(_ tap: AudioObjectID) -> AudioStreamBasicDescription? {

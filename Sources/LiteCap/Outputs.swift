@@ -216,6 +216,8 @@ final class StreamOutput: @unchecked Sendable {
             pipe = continuation
             self.publisher = publisher
             sentVideoHeader = false
+            interleave.removeAll()
+            newestPTS = .min
             ready = true
         }
         encoder.requestKeyframe()
@@ -275,14 +277,34 @@ final class StreamOutput: @unchecked Sendable {
         }
     }
 
-    /// Called on `queue`.
+    /// Packets waiting to be sent in timestamp order (audio arrives in bursts, a little behind video).
+    private var interleave: [EncodedPacket] = []
+    private var newestPTS: Int64 = .min
+    private static let interleaveWindow: Int64 = 300_000 // µs
+
+    /// Called on `queue`. Holds packets briefly and sends them strictly in timestamp order:
+    /// Twitch flags out-of-order audio/video as unstable and stretches the audio to fit (low,
+    /// crackly sound).
     private func send(_ packet: EncodedPacket) {
-        guard ready, let pipe else { return }
+        guard ready else { return }
+        let index = interleave.lastIndex(where: { $0.pts <= packet.pts }).map { $0 + 1 } ?? 0
+        interleave.insert(packet, at: index)
+        newestPTS = max(newestPTS, packet.pts)
+        while let first = interleave.first, first.pts <= newestPTS - Self.interleaveWindow {
+            interleave.removeFirst()
+            emit(first)
+        }
+    }
+
+    private func emit(_ packet: EncodedPacket) {
+        guard let pipe else { return }
         if packet.kind == .video, !sentVideoHeader {
             guard packet.isKeyframe, let avcC else { return }
             sentVideoHeader = true
             pipe.yield(.videoHeader(avcC))
         }
+        // Audio from before the first video keyframe would sit at timestamp 0; skip it.
+        if packet.kind != .video, !sentVideoHeader { return }
         pipe.yield(.packet(packet))
     }
 

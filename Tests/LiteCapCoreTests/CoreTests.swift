@@ -58,6 +58,22 @@ final class ProtocolTests: XCTestCase {
         }
     }
 
+    /// Twitch sends SetChunkSize and then a reply chunked at the new size, in one burst.
+    func testChunkSizeChangeAppliesImmediately() throws {
+        var serverWriter = ChunkWriter()
+        var burst = Data()
+        var size = ByteWriter(); size.u32(4096)
+        burst.append(serverWriter.encode(csid: 2, type: RTMPMessageType.setChunkSize, streamID: 0, timestamp: 0, payload: size.data))
+        serverWriter.chunkSize = 4096
+        let reply = AMF0.encode([.string("_result"), .number(1), .object([("fmsVer", .string(String(repeating: "x", count: 300)))])])
+        burst.append(serverWriter.encode(csid: 3, type: RTMPMessageType.commandAMF0, streamID: 0, timestamp: 0, payload: reply))
+        var reader = ChunkReader()
+        let messages = try reader.feed(burst)
+        XCTAssertEqual(messages.count, 2)
+        XCTAssertEqual(messages.last?.payload, reply)
+        XCTAssertEqual(reader.chunkSize, 4096)
+    }
+
     func testVODTrackTagMatchesOBS() {
         XCTAssertEqual(FLV.multitrackAAC(Data([0xAA]), trackID: 1, isSequenceHeader: false),
                        Data([0x95, 0x01, 0x6D, 0x70, 0x34, 0x61, 0x01, 0xAA]))

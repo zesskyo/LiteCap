@@ -193,6 +193,12 @@ public struct ChunkReader: Sendable {
             let message = RTMPMessage(type: s.type, streamID: s.streamID, timestamp: s.timestamp, payload: s.payload)
             s.payload = Data()
             streams[csid] = s
+            // Apply a new chunk size right away: the very next chunk in this buffer already uses
+            // it (Twitch sends SetChunkSize and then a long reply in one burst).
+            if message.type == RTMPMessageType.setChunkSize, message.payload.count >= 4 {
+                var r = ByteReader(message.payload)
+                if let size = try? r.u32(), size & 0x7FFF_FFFF > 0 { chunkSize = Int(size & 0x7FFF_FFFF) }
+            }
             return .some(message)
         }
         streams[csid] = s
@@ -312,7 +318,15 @@ public actor RTMPPublisher {
         guard let id = created.last?.numberValue else { throw Error.rejected("createStream returned no stream id") }
         streamID = UInt32(id)
 
-        let status = try await withTimeout(seconds, step: "publish") { [self] in try await publishAndWait() }
+        let status: AMF0
+        do {
+            status = try await withTimeout(seconds, step: "publish") { [self] in try await publishAndWait() }
+        } catch Error.timeout(let step) {
+            throw Error.timeout(step)
+        } catch {
+            // Twitch (and others) just hang up on a bad key instead of saying why.
+            throw Error.rejected("the server closed the connection when the stream key was sent. Check that the key is correct and current")
+        }
         let code = status["code"]?.stringValue ?? ""
         guard code == "NetStream.Publish.Start" else {
             throw Error.rejected(status["description"]?.stringValue ?? code)
